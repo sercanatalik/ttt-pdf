@@ -1,9 +1,11 @@
 # pdf-viewer for ttt
 
+[![test](https://github.com/sercanatalik/ttt-pdf/actions/workflows/test.yml/badge.svg)](https://github.com/sercanatalik/ttt-pdf/actions/workflows/test.yml)
+
 Quick-look PDFs inside [ttt](https://github.com/eugenioenko/ttt). Open a `.pdf` from the explorer or the command line and it shows one page at a time in an editor tab. Terminals with the Kitty graphics protocol (Kitty, Ghostty, WezTerm) show the rendered page. Other terminals, and tmux, show the page's text instead.
 
 ```
-paper.pdf  page 3/12  [fit width 40%]  n/p page  w fit  t text  r reload
+paper.pdf  page 3/12  [fit width 40%]  n/p page  : go to  w fit  t text  r reload
 ```
 
 > **Status:** early. It needs a ttt build with plugin file handlers and the image widget, proposed in [eugenioenko/ttt#813](https://github.com/eugenioenko/ttt/issues/813). Older ttt versions keep showing PDFs as binary files.
@@ -38,6 +40,7 @@ git clone https://github.com/sercanatalik/ttt-pdf ~/.config/ttt/plugins/pdf-view
 | `Space` / `PgDn` | Next screen: scrolls down the page in fit width, then continues on the next page |
 | `b` / `PgUp` | Previous screen: scrolls up, then continues at the bottom of the previous page |
 | `g` / `Home`, `G` / `End` | First / last page |
+| `:` | Go to a page: a number, `$` for the last page, or `+N` / `-N` relative to the current one |
 | `w` | Switch between **fit page** (whole page visible) and **fit width** (page as wide as the tab, scroll vertically) |
 | `j` / `k`, `↓` / `↑`, mouse wheel | Scroll (fit width and text); the wheel turns pages in fit page |
 | `t` | Toggle between the page image and its text |
@@ -48,6 +51,7 @@ git clone https://github.com/sercanatalik/ttt-pdf ~/.config/ttt/plugins/pdf-view
 | Permission | Why |
 |------------|-----|
 | `editor.file_handlers` | Open `.pdf` files (and files starting with `%PDF-`) in this viewer instead of the binary file card. |
+| `keybindings` | Show the `:` go-to-page prompt (`ttt.command_line`). The plugin binds no global keys; its keys only work while a PDF tab is focused. |
 | `system.exec`: `pdfinfo`, `pdftoppm`, `pdftotext` | Read the page count and size, render a page to PNG, and extract a page's text. No other programs are run. |
 
 The plugin reads no other files, makes no network requests, and stores nothing.
@@ -77,7 +81,7 @@ TTT_BIN=/path/to/ttt tests/run.sh
 
 `tests/run.sh` installs the plugin into a throwaway config with its manifest permissions, then drives the real `ttt` binary:
 
-- **Text mode**, headlessly with `--exec`: opening, paging and its bounds, reload, a corrupt file, and missing poppler.
+- **Text mode**, headlessly with `--exec`: opening, paging and its bounds, go to page, reload, a corrupt file, and missing poppler.
 - **Image mode**, with `tests/kitty.py` (needs `python3`): it runs ttt in a pseudo-terminal that reports pixel sizes the way Ghostty does, drives it over `--listen` (port 4242 must be free), and decodes the Kitty graphics commands ttt sends. The checks cover fit page, fit width, scrolling across pages, and that idle redraws send nothing. Decoded images land in the temp dir, which is handy when debugging.
 
 `tests/make_fixture.py` regenerates `tests/fixtures/sample.pdf`.

@@ -2,7 +2,7 @@ local ttt = require("ttt")
 local sys = require("ttt.system")
 
 local MIN_DPI, MAX_DPI, DPI_STEP = 24, 300, 8
-local HINTS = "n/p page  w fit  t text  r reload"
+local HINTS = "n/p page  : go to  w fit  t text  r reload"
 local INSTALL_HINT = "Install poppler: brew install poppler | apt install poppler-utils | dnf install poppler-utils"
 
 local NO_GRAPHICS = { protocol = "none", cell_w = 0, cell_h = 0 }
@@ -347,6 +347,46 @@ function View:screen_up()
   return self:scroll(-self.layout.visible)
 end
 
+-- Accepts "12", "$" for the last page, and "+3" / "-2" relative to the current page.
+function View:parse_target(text)
+  text = text:gsub("^%s+", ""):gsub("%s+$", "")
+  if text == "$" then
+    return self.pages
+  end
+  local sign, digits = text:match("^([+-]?)(%d+)$")
+  if not digits then
+    return nil
+  end
+  local n = tonumber(digits)
+  if sign == "+" then
+    n = self.page + n
+  elseif sign == "-" then
+    n = self.page - n
+  end
+  if n >= 1 and n <= self.pages then
+    return n
+  end
+end
+
+function View:prompt_page()
+  if not (ttt.command_line and self.pages) then
+    return false
+  end
+  ttt.command_line.show({
+    prefix = "Go to page (1-" .. self.pages .. "): ",
+    on_submit = function(text)
+      local target = self:parse_target(text)
+      if target then
+        self:go_to(target)
+        self:redraw()
+      elseif text:match("%S") then
+        ttt.notify("No page " .. text .. " in " .. basename(self.path) .. " (1-" .. self.pages .. ")", "warn")
+      end
+    end,
+  })
+  return true
+end
+
 local KEYS = {
   n = function(v) return v:go_to(v.page + 1) end,
   Right = function(v) return v:go_to(v.page + 1) end,
@@ -364,6 +404,7 @@ local KEYS = {
   Down = function(v) return v:scroll(1) end,
   k = function(v) return v:scroll(-1) end,
   Up = function(v) return v:scroll(-1) end,
+  [":"] = function(v) return v:prompt_page() end,
   w = function(v)
     v.fit = v.fit == "width" and "page" or "width"
     v.scroll_rows = 0

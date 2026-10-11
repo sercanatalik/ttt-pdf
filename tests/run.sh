@@ -16,7 +16,7 @@ CFG="$WORK/config"
 mkdir -p "$CFG/plugins/pdf-viewer"
 cp "$ROOT/plugin.ttt.json" "$ROOT/init.lua" "$CFG/plugins/pdf-viewer/"
 cat > "$CFG/plugins.ttt.json" <<'JSON'
-[{"name":"pdf-viewer","version":"0.1.0","enabled":true,"permissions":{"editor.file_handlers":true,"system.exec":["pdfinfo","pdftoppm","pdftotext"]}}]
+[{"name":"pdf-viewer","version":"0.1.0","enabled":true,"permissions":{"editor.file_handlers":true,"keybindings":true,"system.exec":["pdfinfo","pdftoppm","pdftotext"]}}]
 JSON
 
 failures=0
@@ -56,6 +56,12 @@ run back sample.pdf 'wait-for "Alpha page"; type G; wait-for "Charlie page"; key
 
 run reload sample.pdf 'wait-for "Alpha page"; key n; wait-for "Bravo page"; key r; wait-for "page 2/3"; wait-for "Bravo page"' && \
   expect reload "Bravo page" "r reloads and keeps the current page" || fail "reload"
+
+run goto sample.pdf 'wait-for "Alpha page"; type :; wait-for "Go to page (1-3)"; type 3; key enter; wait-for "Charlie page"; type :; type -1; key enter; wait 150' && \
+  expect goto "page 2/3" ": jumps to a page number and to a relative page" || fail "go to page"
+
+run goto_bad sample.pdf 'wait-for "Alpha page"; type :; type 9; key enter; wait-for "No page 9"' && \
+  expect goto_bad "page 1/3" ": rejects a page outside the document" || fail "go to page (out of range)"
 
 printf '\x00\x01\x02not a pdf\xff' > "$FIXTURES/broken.pdf"
 run broken broken.pdf 'wait-for "pdfinfo failed"' && \
