@@ -16,7 +16,7 @@ CFG="$WORK/config"
 mkdir -p "$CFG/plugins/pdf-viewer"
 cp "$ROOT/plugin.ttt.json" "$ROOT/init.lua" "$CFG/plugins/pdf-viewer/"
 cat > "$CFG/plugins.ttt.json" <<'JSON'
-[{"name":"pdf-viewer","version":"0.1.0","enabled":true,"permissions":{"editor.file_handlers":true,"keybindings":true,"events.file":true,"system.exec":["pdfinfo","pdftoppm","pdftotext"]}}]
+[{"name":"pdf-viewer","version":"0.2.0","enabled":true,"permissions":{"editor.file_handlers":true,"keybindings":true,"events.file":true,"system.exec":["pdfinfo","pdftoppm","pdftotext"]}}]
 JSON
 
 failures=0
