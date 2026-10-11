@@ -4,9 +4,9 @@
 
 Quick-look PDFs inside [ttt](https://github.com/eugenioenko/ttt). Open a `.pdf` from the explorer or the command line and it shows one page at a time in an editor tab. Terminals with the Kitty graphics protocol (Kitty, Ghostty, WezTerm) show the rendered page. Other terminals, and tmux, show the page's text instead.
 
-```
-paper.pdf  page 3/12  [fit width 40%]  n/p page  : go to  w fit  t text  r reload
-```
+<p align="center">
+  <img src="docs/screenshot.png" alt="A page of a research paper rendered inside a ttt editor tab in Ghostty, with the status line showing page 2/15 and the viewer's keys" width="640">
+</p>
 
 > **Status:** early. It needs a ttt build with plugin file handlers and the image widget, proposed in [eugenioenko/ttt#813](https://github.com/eugenioenko/ttt/issues/813). Older ttt versions keep showing PDFs as binary files.
 
