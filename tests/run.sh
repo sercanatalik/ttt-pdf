@@ -63,6 +63,25 @@ run goto sample.pdf 'wait-for "Alpha page"; type :; wait-for "Go to page (1-3)";
 run goto_bad sample.pdf 'wait-for "Alpha page"; type :; type 9; key enter; wait-for "No page 9"' && \
   expect goto_bad "page 1/3" ": rejects a page outside the document" || fail "go to page (out of range)"
 
+run search sample.pdf 'wait-for "Alpha page"; type /; wait-for "Search:"; type charlie; key enter; wait-for "match 1/1"' && \
+  expect search "page 3/3" "/ finds a match and jumps to its page" || fail "search"
+
+run search_nav sample.pdf 'wait-for "Alpha page"; type /; type PAGE; key enter; wait-for "match 1/3"; key n; wait-for "match 2/3"; type N; wait-for "match 1/3"; type N; wait-for "match 3/3"; key escape; wait 150; key n; wait 150' && {
+  # After Esc, n turns pages again: on the last page it stays put instead of wrapping to the first match.
+  if grep -qF "page 3/3" "$WORK/search_nav.txt" && ! grep -qF "match " "$WORK/search_nav.txt"; then
+    pass "n/N step through matches and wrap; Esc makes n turn pages again"
+  else
+    fail "n/N step through matches and wrap; Esc makes n turn pages again"
+    sed 's/^/        | /' "$WORK/search_nav.txt" >&2
+  fi
+} || fail "search navigation"
+
+run search_wrap sample.pdf 'wait-for "Alpha page"; type G; wait-for "Charlie page"; type /; type alpha; key enter; wait-for "match 1/1"' && \
+  expect search_wrap "page 1/3" "search wraps to the start of the document" || fail "search wrap"
+
+run search_none sample.pdf 'wait-for "Alpha page"; type /; type zebra; key enter; wait-for "No matches"' && \
+  expect search_none "page 1/3" "a search with no matches says so and stays put" || fail "search with no matches"
+
 printf '\x00\x01\x02not a pdf\xff' > "$FIXTURES/broken.pdf"
 run broken broken.pdf 'wait-for "pdfinfo failed"' && \
   expect broken "pdfinfo failed" "a corrupt file shows the pdfinfo error" || fail "broken"

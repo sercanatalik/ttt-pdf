@@ -3,7 +3,8 @@ local sys = require("ttt.system")
 
 local MIN_DPI, MAX_DPI, DPI_STEP = 24, 300, 8
 local POLL_MS = 1000
-local HINTS = "n/p page  : go to  w fit  t text  r reload"
+local HINTS = "n/p page  : go to  / search  w fit  t text  r reload"
+local SEARCH_HINTS = "n/N match  Esc clear"
 local INSTALL_HINT = "Install poppler: brew install poppler | apt install poppler-utils | dnf install poppler-utils"
 
 local NO_GRAPHICS = { protocol = "none", cell_w = 0, cell_h = 0 }
@@ -69,6 +70,17 @@ local function split_lines(text)
   return lines
 end
 
+-- pdftotext ends every page with a form feed, so one extraction of the whole document splits back into pages.
+local function split_pages(stdout, count)
+  local pages, start = {}, 1
+  for i = 1, count do
+    local stop = stdout:find("\f", start, true)
+    pages[i] = split_lines(stop and stdout:sub(start, stop - 1) or stdout:sub(start))
+    start = stop and stop + 1 or #stdout + 1
+  end
+  return pages
+end
+
 -- Rounding down to DPI_STEP keeps small resizes from re-rendering; contain-fit never upscales, so a slightly smaller image still fits.
 local function dpi_for(view, page, cols, rows, g)
   local w, h = view:page_size(page)
@@ -97,6 +109,10 @@ function View:reset()
   self.images = {}
   self.shown = nil
   self.texts = {}
+  self.doc = nil
+  if self.search then
+    self.search.matches = nil
+  end
   self.pending = {}
   self.text_offset = 0
   self.text_mode = self.text_mode or false
@@ -199,6 +215,10 @@ function View:refresh(stdout)
   self.pending = {}
   self.images = {}
   self.texts = {}
+  self.doc = nil
+  if self.search then
+    self.search.matches = nil
+  end
   self.sizes = {}
   self.error = nil
   if self:apply_info(stdout) then
@@ -260,6 +280,88 @@ function View:fetch_text(page)
   end)
 end
 
+-- Search and text mode share one extraction of the whole document, so a match's line number is the line text mode shows.
+function View:load_doc(on_ready)
+  if self.doc then
+    on_ready()
+    return
+  end
+  self:run("pdftotext", { "-layout", self.path, "-" }, "doc", function(stdout)
+    self.doc = split_pages(stdout, self.pages)
+    on_ready()
+  end)
+end
+
+-- stay recomputes matches after a reload without moving the view or announcing anything.
+function View:search_for(query, stay)
+  self.search = { query = query }
+  self:load_doc(function()
+    if not self.search or self.search.query ~= query then
+      return
+    end
+    local needle = query:lower()
+    local matches = {}
+    for page, lines in ipairs(self.doc) do
+      for i, line in ipairs(lines) do
+        if line:lower():find(needle, 1, true) then
+          table.insert(matches, { page = page, line = i })
+        end
+      end
+    end
+    if #matches == 0 then
+      self.search = nil
+      if not stay then
+        ttt.notify('No matches for "' .. query .. '" in ' .. basename(self.path), "warn")
+      end
+      return
+    end
+    self.search.matches = matches
+    self.search.index = 1
+    for i, m in ipairs(matches) do
+      if m.page >= self.page then
+        self.search.index = i
+        break
+      end
+    end
+    if not stay then
+      self:show_match()
+    end
+  end)
+end
+
+function View:show_match()
+  local m = self.search.matches[self.search.index]
+  self:go_to(m.page)
+  self.text_offset = math.max(0, m.line - 3)
+  self.match_ratio = (m.line - 1) / math.max(#self.doc[m.page], 1)
+end
+
+function View:step_match(delta)
+  local s = self.search
+  s.index = (s.index - 1 + delta) % #s.matches + 1
+  self:show_match()
+  return true
+end
+
+function View:prompt_search()
+  if not (ttt.command_line and self.pages) then
+    return false
+  end
+  ttt.command_line.show({
+    prefix = "Search: ",
+    text = self.search and self.search.query or "",
+    on_submit = function(text)
+      if text:match("%S") then
+        self:search_for(text)
+      else
+        self.search = nil
+      end
+      self:redraw()
+    end,
+  })
+  return true
+end
+
 -- Keeps what the next keypress is likely to need (neighbouring pages at their own resolution, nearby slices) so memory stays bounded on long documents.
 -- expected(page) gives the resolution a page renders at now; nil (text mode) keeps only the current page.
 function View:prune(expected, y, span)
@@ -292,7 +394,14 @@ end
 
 function View:status_line(mode)
   local pages = self.pages and tostring(self.pages) or "?"
-  return string.format("%s  page %d/%s  [%s]  %s", basename(self.path), self.page, pages, mode, HINTS)
+  local hints = HINTS
+  local s = self.search
+  if s and s.matches then
+    hints = string.format('match %d/%d "%s"  %s', s.index, #s.matches, s.query, SEARCH_HINTS)
+  elseif s then
+    hints = 'searching for "' .. s.query .. '"...'
+  end
+  return string.format("%s  page %d/%s  [%s]  %s", basename(self.path), self.page, pages, mode, hints)
 end
 
 function View:render_page(panel, cols, rows, g)
@@ -318,7 +427,13 @@ function View:layout_width(cols, rows, g)
   local dpi = math.floor(cols * g.cell_w / (w / 72) / DPI_STEP) * DPI_STEP
   dpi = math.max(MIN_DPI, math.min(MAX_DPI, dpi))
   local page_h = math.floor(h / 72 * dpi)
-  local max_scroll = math.max(0, math.ceil(page_h / g.cell_h) - visible)
+  local total_rows = math.ceil(page_h / g.cell_h)
+  local max_scroll = math.max(0, total_rows - visible)
+  -- A search match only knows its line, so the position is estimated from how far down the page that line is.
+  if self.match_ratio then
+    self.scroll_rows = math.floor(self.match_ratio * total_rows) - math.floor(visible / 3)
+    self.match_ratio = nil
+  end
   self.scroll_rows = math.max(0, math.min(self.scroll_rows, max_scroll))
   self.layout = {
     visible = visible,
@@ -349,8 +464,11 @@ end
 
 function View:render_text(panel, rows)
   self:prune(nil)
-  self:fetch_text(self.page)
-  local lines = self.texts[self.page]
+  local lines = self.doc and self.doc[self.page]
+  if not lines then
+    self:fetch_text(self.page)
+    lines = self.texts[self.page]
+  end
   if not lines then
     panel:label({ text = "Extracting text from page " .. self.page .. "...", style = "muted" })
     return
@@ -362,8 +480,17 @@ function View:render_text(panel, rows)
   local visible = math.max(rows - 1, 1)
   self.text_offset = math.max(0, math.min(self.text_offset, #lines - visible))
   self.layout = { visible = visible, max_scroll = math.max(0, #lines - visible) }
+  local s = self.search
+  local needle = s and s.matches and s.query:lower()
+  local current = needle and s.matches[s.index]
   for i = self.text_offset + 1, math.min(#lines, self.text_offset + visible) do
-    panel:label(lines[i])
+    local style = "default"
+    if current and current.page == self.page and current.line == i then
+      style = "selected"
+    elseif needle and lines[i]:lower():find(needle, 1, true) then
+      style = "warning"
+    end
+    panel:label({ text = lines[i], style = style })
   end
 end
 
@@ -395,6 +522,9 @@ function View:render(panel)
     panel:label({ text = self:status_line(self:mode_label()), style = "muted" })
     panel:label({ text = self.error or ("Reading " .. basename(self.path) .. "..."), style = self.error and "danger" or "muted" })
     return
+  end
+  if self.search and not self.search.matches and not self.pending.doc then
+    self:search_for(self.search.query, true)
   end
   if self.mode == "width" then
     self:layout_width(cols, rows, g)
@@ -492,8 +622,26 @@ function View:prompt_page()
   return true
 end
 
+local function searching(v)
+  return v.search and v.search.matches
+end
+
 local KEYS = {
-  n = function(v) return v:go_to(v.page + 1) end,
+  n = function(v)
+    if searching(v) then
+      return v:step_match(1)
+    end
+    return v:go_to(v.page + 1)
+  end,
+  N = function(v) return searching(v) and v:step_match(-1) or false end,
+  ["/"] = function(v) return v:prompt_search() end,
+  Esc = function(v)
+    if v.search then
+      v.search = nil
+      return true
+    end
+    return false
+  end,
   Right = function(v) return v:go_to(v.page + 1) end,
   p = function(v) return v:go_to(v.page - 1) end,
   Left = function(v) return v:go_to(v.page - 1) end,
@@ -526,10 +674,13 @@ local KEYS = {
   end,
 }
 
+-- ttt reports Escape as "Esc" (its plugin docs say "Escape"), so both names map to the same action.
+local KEY_ALIASES = { Escape = "Esc" }
+
 function View:on_event(ev)
   local handled = false
   if ev.type == "key" and (ev.mod == nil or ev.mod == "shift") then
-    local action = KEYS[ev.key]
+    local action = KEYS[KEY_ALIASES[ev.key] or ev.key]
     handled = action ~= nil and action(self)
   elseif ev.type == "mouse" then
     local paging = self.mode == "page"
