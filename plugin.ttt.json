@@ -1,0 +1,12 @@
+{
+  "name": "pdf-viewer",
+  "displayName": "PDF Viewer",
+  "description": "Quick-look PDF pages in an editor tab, with a text fallback for terminals without graphics",
+  "version": "0.1.0",
+  "author": "sercanatalik",
+  "entry": "init.lua",
+  "permissions": {
+    "editor.file_handlers": true,
+    "system.exec": ["pdfinfo", "pdftoppm", "pdftotext"]
+  }
+}
