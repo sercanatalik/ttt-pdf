@@ -2,7 +2,7 @@
 
 [![test](https://github.com/sercanatalik/ttt-pdf/actions/workflows/test.yml/badge.svg)](https://github.com/sercanatalik/ttt-pdf/actions/workflows/test.yml)
 
-Quick-look PDFs inside [ttt](https://github.com/eugenioenko/ttt). Open a `.pdf` from the explorer or the command line and it shows one page at a time in an editor tab. Terminals with the Kitty graphics protocol (Kitty, Ghostty, WezTerm) show the rendered page. Other terminals, and tmux, show the page's text instead.
+Quick-look PDFs inside [ttt](https://github.com/eugenioenko/ttt). Open a `.pdf` from the explorer or the command line and it shows one page at a time in an editor tab. Terminals with the Kitty graphics protocol (Kitty, Ghostty, WezTerm) show the rendered page, and so does [herdr](#inside-herdr). Other terminals, and tmux, show the page's text instead.
 
 <p align="center">
   <img src="docs/screenshot.png" alt="A page of a research paper rendered inside a ttt editor tab in Ghostty, with the status line showing page 2/15 and the viewer's keys" width="640">
@@ -30,6 +30,30 @@ Or clone it into your config directory:
 ```sh
 git clone https://github.com/sercanatalik/ttt-pdf ~/.config/ttt/plugins/pdf-viewer
 ```
+
+## Inside herdr
+
+[herdr](https://herdr.dev) works too: the screenshot above is ttt running in a herdr pane, opened by ttt's own herdr plugin, **TTT Editor**.
+
+1. Install the TTT Editor plugin for herdr:
+
+   ```sh
+   herdr plugin install eugenioenko/ttt/herdr-plugin
+   ```
+
+   It runs the `ttt` on your `PATH` with your normal ttt config, so install pdf-viewer [as above](#install). Until [eugenioenko/ttt#813](https://github.com/eugenioenko/ttt/issues/813) is merged, that `ttt` has to be a build of [`sercanatalik/ttt@feat/plugin-image-widget`](https://github.com/sercanatalik/ttt/tree/feat/plugin-image-widget).
+
+2. Turn on herdr's Kitty graphics support. It's experimental and needs herdr 0.5.9 or newer:
+
+   ```toml
+   # ~/.config/herdr/config.toml
+   [experimental]
+   kitty_graphics = true
+   ```
+
+   Restart herdr after changing it. Without it herdr doesn't draw images, so the page area stays empty; press `t` to read the page as text.
+
+3. In herdr, open TTT Editor (the **Open TTT** action, or `herdr plugin pane open --plugin ttt.editor --entrypoint editor`) and open a PDF from the explorer.
 
 ## Keys
 
@@ -69,7 +93,7 @@ The plugin reads no other files, makes no network requests, and stores nothing.
 
 - One page at a time in fit page; fit width scrolls within a page and steps to the next one. No arbitrary zoom levels, search, or links.
 - In fit width each scroll step sends a new slice to the terminal (about 1 MB per screen at 1200 px wide), which is fine locally but slow over SSH.
-- Page images need a terminal with the Kitty graphics protocol, outside tmux.
+- Page images need a terminal with the Kitty graphics protocol. They work inside herdr with `kitty_graphics` enabled, but not inside tmux.
 - The resolution is based on the first page's size; documents that mix page sizes still fit, but pages that differ in size can render smaller.
 - Scanned PDFs have no text, so text mode shows nothing for them.
 
