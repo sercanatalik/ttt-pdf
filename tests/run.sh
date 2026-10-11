@@ -62,7 +62,8 @@ run broken broken.pdf 'wait-for "pdfinfo failed"' && \
   expect broken "pdfinfo failed" "a corrupt file shows the pdfinfo error" || fail "broken"
 rm -f "$FIXTURES/broken.pdf"
 
-run missing sample.pdf 'wait-for "is not available"' PATH=/usr/bin:/bin && \
+mkdir -p "$WORK/empty-path"
+run missing sample.pdf 'wait-for "is not available"' PATH="$WORK/empty-path" && \
   expect missing "Install poppler" "missing poppler shows install instructions" || fail "missing poppler"
 
 # Image mode needs a terminal that reports pixel sizes; tests/kitty.py fakes one like Ghostty and decodes what ttt sends.

@@ -1,0 +1,44 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+env:
+  # The plugin needs ttt's file handlers and image widget (eugenioenko/ttt#813).
+  # Switch to eugenioenko/ttt@main once they are merged.
+  TTT_REPO: sercanatalik/ttt
+  TTT_REF: feat/plugin-image-widget
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out ttt
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.TTT_REPO }}
+          ref: ${{ env.TTT_REF }}
+          path: .ttt
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .ttt/go.mod
+          cache-dependency-path: .ttt/go.sum
+
+      - name: Install poppler
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+
+      - name: Build ttt
+        working-directory: .ttt
+        run: go build -o "$RUNNER_TEMP/ttt" ./cmd/ttt
+
+      - name: Run tests
+        run: TTT_BIN="$RUNNER_TEMP/ttt" tests/run.sh
