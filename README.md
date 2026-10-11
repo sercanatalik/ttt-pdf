@@ -83,7 +83,7 @@ The plugin reads no other files, makes no network requests, and stores nothing.
 
 ## How it works
 
-- `pdfinfo` gives the page count and page size when the file opens.
+- `pdfinfo` gives the page count when the file opens, then each page's size and rotation, so landscape and rotated pages in a portrait document fill the tab too.
 - **Fit page** renders each page with `pdftoppm` at the largest resolution that fits the whole page in the tab, from the terminal's cell size in pixels. It's rounded down to a multiple of 8 so small resizes don't re-render, and kept between 24 and 300 DPI.
 - **Fit width** picks the resolution that makes the page as wide as the tab and renders only the visible slice (`pdftoppm -x -y -W -H`), so tall pages never get rasterized in full. Scrolling renders the next slice, which is fetched ahead of time.
 - The PNG goes to `panel:image`, which sends it to the terminal once. The current page and its neighbours stay cached, and the next page is rendered ahead of time.
@@ -96,7 +96,7 @@ The plugin reads no other files, makes no network requests, and stores nothing.
 - One page at a time in fit page; fit width scrolls within a page and steps to the next one. No arbitrary zoom levels, search, or links.
 - In fit width each scroll step sends a new slice to the terminal (about 1 MB per screen at 1200 px wide), which is fine locally but slow over SSH.
 - Page images need a terminal with the Kitty graphics protocol. They work inside herdr with `kitty_graphics` enabled, but not inside tmux.
-- The resolution is based on the first page's size; documents that mix page sizes still fit, but pages that differ in size can render smaller.
+- Password-protected PDFs (ones that need a password to open) aren't supported yet; the tab says so. PDFs that only restrict printing or copying open normally.
 - Scanned PDFs have no text, so text mode shows nothing for them.
 
 ## Development
@@ -107,8 +107,8 @@ TTT_BIN=/path/to/ttt tests/run.sh
 
 `tests/run.sh` installs the plugin into a throwaway config with its manifest permissions, then drives the real `ttt` binary:
 
-- **Text mode**, headlessly with `--exec`: opening, paging and its bounds, go to page, reload, a corrupt file, and missing poppler.
-- **Image mode**, with `tests/kitty.py` (needs `python3`): it runs ttt in a pseudo-terminal that reports pixel sizes the way Ghostty does, drives it over `--listen` (port 4242 must be free), and decodes the Kitty graphics commands ttt sends. The checks cover fit page, fit width, scrolling across pages, that idle redraws send nothing, and auto-reload (a half-written file is ignored; a rebuilt one reloads in place). Decoded images land in the temp dir, which is handy when debugging.
+- **Text mode**, headlessly with `--exec`: opening, paging and its bounds, go to page, reload, a corrupt file, an encrypted file, and missing poppler.
+- **Image mode**, with `tests/kitty.py` (needs `python3`): it runs ttt in a pseudo-terminal that reports pixel sizes the way Ghostty does, drives it over `--listen` (port 4242 must be free), and decodes the Kitty graphics commands ttt sends. The checks cover fit page, fit width, scrolling across pages, mixed page sizes and rotation, that idle redraws send nothing, and auto-reload (a half-written file is ignored; a rebuilt one reloads in place). Decoded images land in the temp dir, which is handy when debugging.
 
 `tests/make_fixture.py` regenerates the fixtures in `tests/fixtures/`.
 

@@ -69,6 +69,9 @@ run broken broken.pdf 'wait-for "pdfinfo failed"' && \
 rm -f "$FIXTURES/broken.pdf"
 
 mkdir -p "$WORK/empty-path"
+run encrypted encrypted.pdf 'wait-for "password-protected"' && \
+  expect encrypted "encrypted.pdf is password-protected" "an encrypted PDF explains why it can't open" || fail "encrypted"
+
 run missing sample.pdf 'wait-for "is not available"' PATH="$WORK/empty-path" && \
   expect missing "Install poppler" "missing poppler shows install instructions" || fail "missing poppler"
 
@@ -96,6 +99,31 @@ if command -v python3 >/dev/null; then
     fail "image mode session"
   fi
   [ "$failures" -gt 0 ] && sed 's/^/        | /' "$WORK/gfx.log" >&2
+
+  # Page 1 is portrait, page 2 landscape, page 3 portrait rotated 90 degrees: each should be sent in its own shape.
+  if python3 -I "$ROOT/tests/kitty.py" "$TTT_BIN" "$FIXTURES" "$CFG" mixed.pdf 120x40 10x20 "$WORK/mixed" \
+      "MARK p1" 'wait-for "[fit page]"; wait-for "page 1/3"; wait 1500' \
+      "MARK p2" 'click 70 20; key n; wait-for "page 2/3"; wait 1500' \
+      "MARK p3" 'key n; wait-for "page 3/3"; wait 1500' \
+      "MARK end" >"$WORK/mixed.log" 2>&1; then
+    shape() {
+      local line w h
+      line=$(grep -E "^\[($1)\] a=t" "$WORK/mixed.log" | tail -1)
+      w=$(echo "$line" | sed -E 's/.* s=([0-9]+).*/\1/'); h=$(echo "$line" | sed -E 's/.* v=([0-9]+).*/\1/')
+      # The tab is 33 rows x 20 px = 660 px tall; a page rendered at its own size fills at least 85% of that.
+      if [ -z "$line" ]; then echo none; elif [ "$h" -lt 560 ]; then echo "too-small(${w}x${h})"; elif [ "$w" -gt "$h" ]; then echo landscape; else echo portrait; fi
+    }
+    got="$(shape 'start|p1') $(shape p2) $(shape p3)"
+    if [ "$got" = "portrait landscape landscape" ]; then
+      pass "each page renders at its own size and rotation"
+    else
+      fail "each page renders at its own size and rotation (got: $got)"
+      sed 's/^/        | /' "$WORK/mixed.log" >&2
+    fi
+  else
+    fail "mixed page sizes session"
+    sed 's/^/        | /' "$WORK/mixed.log" >&2
+  fi
 
   LIVE="$WORK/live"
   mkdir -p "$LIVE"

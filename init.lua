@@ -20,7 +20,10 @@ local function basename(path)
   return path:match("([^/\\]+)$") or path
 end
 
-local function exec_failure(binary, result)
+local function exec_failure(binary, result, path)
+  if result.stderr:find("Incorrect password", 1, true) then
+    return basename(path) .. " is password-protected. pdf-viewer can't open encrypted PDFs yet."
+  end
   if result.exit_code == -1 then
     return binary .. " is not available (" .. result.stderr .. "). " .. INSTALL_HINT
   end
@@ -37,6 +40,23 @@ local function parse_info(stdout)
   return pages, tonumber(w), tonumber(h)
 end
 
+-- pdfinfo -f 1 -l N lists every page; a page rotated by 90 or 270 degrees renders with its width and height swapped.
+local function parse_sizes(stdout)
+  local sizes, rotations = {}, {}
+  for page, w, h in stdout:gmatch("Page%s+(%d+) size:%s+([%d%.]+) x ([%d%.]+) pts") do
+    sizes[tonumber(page)] = { tonumber(w), tonumber(h) }
+  end
+  for page, rot in stdout:gmatch("Page%s+(%d+) rot:%s+(%-?%d+)") do
+    rotations[tonumber(page)] = tonumber(rot) % 360
+  end
+  for page, size in pairs(sizes) do
+    if rotations[page] == 90 or rotations[page] == 270 then
+      sizes[page] = { size[2], size[1] }
+    end
+  end
+  return sizes
+end
+
 local function split_lines(text)
   local lines = {}
   text = text:gsub("\f", "")
@@ -50,10 +70,11 @@ local function split_lines(text)
 end
 
 -- Rounding down to DPI_STEP keeps small resizes from re-rendering; contain-fit never upscales, so a slightly smaller image still fits.
-local function dpi_for(view, cols, rows, g)
+local function dpi_for(view, page, cols, rows, g)
+  local w, h = view:page_size(page)
   local avail_w = cols * g.cell_w
   local avail_h = math.max(rows - 1, 1) * g.cell_h
-  local dpi = math.min(avail_w / (view.width / 72), avail_h / (view.height / 72))
+  local dpi = math.min(avail_w / (w / 72), avail_h / (h / 72))
   dpi = math.floor(dpi / DPI_STEP) * DPI_STEP
   return math.max(MIN_DPI, math.min(MAX_DPI, dpi))
 end
@@ -71,6 +92,7 @@ function View:reset()
   self.page = self.page or 1
   self.pages = nil
   self.width, self.height = 612, 792
+  self.sizes = {}
   self.error = nil
   self.images = {}
   self.shown = nil
@@ -104,7 +126,7 @@ function View:run(binary, args, key, on_success)
     if result.exit_code == 0 then
       on_success(result.stdout)
     else
-      self.error = exec_failure(binary, result)
+      self.error = exec_failure(binary, result, self.path)
     end
     self:redraw()
   end)
@@ -124,9 +146,25 @@ function View:apply_info(stdout)
   return true
 end
 
+function View:page_size(page)
+  local size = self.sizes[page]
+  if size then
+    return size[1], size[2]
+  end
+  return self.width, self.height
+end
+
+function View:load_sizes()
+  self:run("pdfinfo", { "-f", "1", "-l", tostring(self.pages), self.path }, "sizes", function(stdout)
+    self.sizes = parse_sizes(stdout)
+  end)
+end
+
 function View:load_info()
   self:run("pdfinfo", { self.path }, "info", function(stdout)
-    if not self:apply_info(stdout) then
+    if self:apply_info(stdout) then
+      self:load_sizes()
+    else
       self.error = "pdfinfo did not report a page count for " .. basename(self.path)
     end
   end)
@@ -161,8 +199,11 @@ function View:refresh(stdout)
   self.pending = {}
   self.images = {}
   self.texts = {}
+  self.sizes = {}
   self.error = nil
-  if not self:apply_info(stdout) then
+  if self:apply_info(stdout) then
+    self:load_sizes()
+  else
     self.error = "pdfinfo did not report a page count for " .. basename(self.path)
   end
   if self.page ~= page and self.shown then
@@ -219,11 +260,12 @@ function View:fetch_text(page)
   end)
 end
 
--- Keeps what the next keypress is likely to need (neighbouring pages, nearby slices, current resolution) so memory stays bounded on long documents.
-function View:prune(dpi, y, span)
+-- Keeps what the next keypress is likely to need (neighbouring pages at their own resolution, nearby slices) so memory stays bounded on long documents.
+-- expected(page) gives the resolution a page renders at now; nil (text mode) keeps only the current page.
+function View:prune(expected, y, span)
   for key, entry in pairs(self.images) do
     local far_page = math.abs(entry.page - self.page) > 1
-    local stale = entry.dpi ~= dpi and entry.page ~= self.page
+    local stale = entry.page ~= self.page and (not expected or entry.dpi ~= expected(entry.page))
     local far_slice = entry.kind == "slice" and y and (entry.page ~= self.page or math.abs(entry.y - y) > 2 * span)
     if far_page or stale or far_slice then
       self.images[key] = nil
@@ -254,10 +296,13 @@ function View:status_line(mode)
 end
 
 function View:render_page(panel, cols, rows, g)
-  local dpi = dpi_for(self, cols, rows, g)
-  self:prune(dpi)
+  local function expected(page) return dpi_for(self, page, cols, rows, g) end
+  local dpi = expected(self.page)
+  self:prune(expected)
   self:fetch_page(self.page, dpi)
-  self:fetch_page(self.page + 1, dpi)
+  if self.page < self.pages then
+    self:fetch_page(self.page + 1, expected(self.page + 1))
+  end
   local png = self:image_for("page:" .. self.page .. ":" .. dpi, "page")
   if png then
     panel:image({ data = png, alt = "Page " .. self.page .. " of " .. self.pages })
@@ -269,16 +314,17 @@ end
 -- Layout runs before anything is drawn, so the status line and the key handlers read the same clamped scroll position.
 function View:layout_width(cols, rows, g)
   local visible = math.max(rows - 1, 1)
-  local dpi = math.floor(cols * g.cell_w / (self.width / 72) / DPI_STEP) * DPI_STEP
+  local w, h = self:page_size(self.page)
+  local dpi = math.floor(cols * g.cell_w / (w / 72) / DPI_STEP) * DPI_STEP
   dpi = math.max(MIN_DPI, math.min(MAX_DPI, dpi))
-  local page_h = math.floor(self.height / 72 * dpi)
+  local page_h = math.floor(h / 72 * dpi)
   local max_scroll = math.max(0, math.ceil(page_h / g.cell_h) - visible)
   self.scroll_rows = math.max(0, math.min(self.scroll_rows, max_scroll))
   self.layout = {
     visible = visible,
     max_scroll = max_scroll,
     dpi = dpi,
-    slice_w = math.floor(self.width / 72 * dpi),
+    slice_w = math.floor(w / 72 * dpi),
     span = visible * g.cell_h,
     y = self.scroll_rows * g.cell_h,
     last_y = max_scroll * g.cell_h,
@@ -287,7 +333,7 @@ end
 
 function View:render_width(panel)
   local l = self.layout
-  self:prune(l.dpi, l.y, l.span)
+  self:prune(function() return l.dpi end, l.y, l.span)
   self:fetch_slice(self.page, l.dpi, l.y, l.slice_w, l.span)
   local next_y = math.min(l.y + l.span, l.last_y)
   if next_y > l.y then
