@@ -2,7 +2,7 @@ local ttt = require("ttt")
 local sys = require("ttt.system")
 
 local MIN_DPI, MAX_DPI, DPI_STEP = 24, 300, 8
-local HINTS = "n/p page  g/G first/last  t text  r reload"
+local HINTS = "n/p page  w fit  t text  r reload"
 local INSTALL_HINT = "Install poppler: brew install poppler | apt install poppler-utils | dnf install poppler-utils"
 
 local NO_GRAPHICS = { protocol = "none", cell_w = 0, cell_h = 0 }
@@ -72,10 +72,13 @@ function View:reset()
   self.width, self.height = 612, 792
   self.error = nil
   self.images = {}
+  self.shown = nil
   self.texts = {}
   self.pending = {}
   self.text_offset = 0
   self.text_mode = self.text_mode or false
+  self.fit = self.fit or "page"
+  self.scroll_rows = self.scroll_rows or 0
   self.generation = (self.generation or 0) + 1
 end
 
@@ -121,22 +124,30 @@ function View:load_info()
   end)
 end
 
-function View:image_key(page, dpi)
-  return "png:" .. page .. ":" .. dpi
-end
-
-function View:fetch_image(page, dpi)
-  if page < 1 or page > self.pages then
-    return
-  end
-  local key = self:image_key(page, dpi)
+function View:fetch(key, entry, args)
   if self.images[key] then
     return
   end
-  local p = tostring(page)
-  self:run("pdftoppm", { "-png", "-r", tostring(dpi), "-f", p, "-l", p, self.path }, key, function(stdout)
-    self.images[key] = stdout
+  self:run("pdftoppm", args, key, function(stdout)
+    entry.data = stdout
+    self.images[key] = entry
   end)
+end
+
+function View:fetch_page(page, dpi)
+  if page < 1 or page > self.pages then
+    return
+  end
+  local p = tostring(page)
+  self:fetch("page:" .. page .. ":" .. dpi, { page = page, dpi = dpi, kind = "page" },
+    { "-png", "-r", tostring(dpi), "-f", p, "-l", p, self.path })
+end
+
+-- pdftoppm crops while rendering, so fit-width only ever rasterizes the visible slice of a page.
+function View:fetch_slice(page, dpi, y, w, h)
+  local p = tostring(page)
+  self:fetch("slice:" .. page .. ":" .. dpi .. ":" .. y .. ":" .. h, { page = page, dpi = dpi, kind = "slice", y = y },
+    { "-png", "-r", tostring(dpi), "-f", p, "-l", p, "-x", "0", "-y", tostring(y), "-W", tostring(w), "-H", tostring(h), self.path })
 end
 
 function View:fetch_text(page)
@@ -149,12 +160,13 @@ function View:fetch_text(page)
   end)
 end
 
--- Keeps the current page and its neighbours at the current resolution; everything else is dropped so memory stays bounded on long documents.
-function View:prune(dpi)
-  for key in pairs(self.images) do
-    local page, key_dpi = key:match("^png:(%d+):(%d+)$")
-    page, key_dpi = tonumber(page), tonumber(key_dpi)
-    if math.abs(page - self.page) > 1 or (key_dpi ~= dpi and page ~= self.page) then
+-- Keeps what the next keypress is likely to need (neighbouring pages, nearby slices, current resolution) so memory stays bounded on long documents.
+function View:prune(dpi, y, span)
+  for key, entry in pairs(self.images) do
+    local far_page = math.abs(entry.page - self.page) > 1
+    local stale = entry.dpi ~= dpi and entry.page ~= self.page
+    local far_slice = entry.kind == "slice" and y and (entry.page ~= self.page or math.abs(entry.y - y) > 2 * span)
+    if far_page or stale or far_slice then
       self.images[key] = nil
     end
   end
@@ -165,16 +177,15 @@ function View:prune(dpi)
   end
 end
 
-function View:current_image(dpi)
-  local exact = self.images[self:image_key(self.page, dpi)]
+-- While a render is in flight the last image shown stays up, but only for the same page and fit: a prefetched neighbouring slice would show the wrong part of the page.
+function View:image_for(key, kind)
+  local exact = self.images[key]
   if exact then
-    return exact
+    self.shown = { page = self.page, kind = kind, data = exact.data }
+    return exact.data
   end
-  local prefix = "png:" .. self.page .. ":"
-  for key, png in pairs(self.images) do
-    if key:sub(1, #prefix) == prefix then
-      return png
-    end
+  if self.shown and self.shown.page == self.page and self.shown.kind == kind then
+    return self.shown.data
   end
 end
 
@@ -183,12 +194,47 @@ function View:status_line(mode)
   return string.format("%s  page %d/%s  [%s]  %s", basename(self.path), self.page, pages, mode, HINTS)
 end
 
-function View:render_image(panel, cols, rows, g)
+function View:render_page(panel, cols, rows, g)
   local dpi = dpi_for(self, cols, rows, g)
   self:prune(dpi)
-  self:fetch_image(self.page, dpi)
-  self:fetch_image(self.page + 1, dpi)
-  local png = self:current_image(dpi)
+  self:fetch_page(self.page, dpi)
+  self:fetch_page(self.page + 1, dpi)
+  local png = self:image_for("page:" .. self.page .. ":" .. dpi, "page")
+  if png then
+    panel:image({ data = png, alt = "Page " .. self.page .. " of " .. self.pages })
+  else
+    panel:label({ text = "Rendering page " .. self.page .. "...", style = "muted" })
+  end
+end
+
+-- Layout runs before anything is drawn, so the status line and the key handlers read the same clamped scroll position.
+function View:layout_width(cols, rows, g)
+  local visible = math.max(rows - 1, 1)
+  local dpi = math.floor(cols * g.cell_w / (self.width / 72) / DPI_STEP) * DPI_STEP
+  dpi = math.max(MIN_DPI, math.min(MAX_DPI, dpi))
+  local page_h = math.floor(self.height / 72 * dpi)
+  local max_scroll = math.max(0, math.ceil(page_h / g.cell_h) - visible)
+  self.scroll_rows = math.max(0, math.min(self.scroll_rows, max_scroll))
+  self.layout = {
+    visible = visible,
+    max_scroll = max_scroll,
+    dpi = dpi,
+    slice_w = math.floor(self.width / 72 * dpi),
+    span = visible * g.cell_h,
+    y = self.scroll_rows * g.cell_h,
+    last_y = max_scroll * g.cell_h,
+  }
+end
+
+function View:render_width(panel)
+  local l = self.layout
+  self:prune(l.dpi, l.y, l.span)
+  self:fetch_slice(self.page, l.dpi, l.y, l.slice_w, l.span)
+  local next_y = math.min(l.y + l.span, l.last_y)
+  if next_y > l.y then
+    self:fetch_slice(self.page, l.dpi, next_y, l.slice_w, l.span)
+  end
+  local png = self:image_for("slice:" .. self.page .. ":" .. l.dpi .. ":" .. l.y .. ":" .. l.span, "slice")
   if png then
     panel:image({ data = png, alt = "Page " .. self.page .. " of " .. self.pages })
   else
@@ -210,9 +256,22 @@ function View:render_text(panel, rows)
   end
   local visible = math.max(rows - 1, 1)
   self.text_offset = math.max(0, math.min(self.text_offset, #lines - visible))
+  self.layout = { visible = visible, max_scroll = math.max(0, #lines - visible) }
   for i = self.text_offset + 1, math.min(#lines, self.text_offset + visible) do
     panel:label(lines[i])
   end
+end
+
+function View:mode_label()
+  if self.mode == "width" then
+    local max = self.layout and self.layout.max_scroll or 0
+    local pct = max > 0 and math.floor(self.scroll_rows / max * 100) or 0
+    return "fit width " .. pct .. "%"
+  end
+  if self.mode == "page" then
+    return "fit page"
+  end
+  return "text"
 end
 
 function View:render(panel)
@@ -220,25 +279,32 @@ function View:render(panel)
   local cols, rows = panel:size()
   local g = graphics()
   local can_draw = g.protocol == "kitty" and g.cell_w > 0 and g.cell_h > 0
-  local mode = (can_draw and not self.text_mode) and "image" or "text"
+  if can_draw and not self.text_mode then
+    self.mode = self.fit
+  else
+    self.mode = "text"
+  end
+  self.layout = nil
 
-  panel:label({ text = self:status_line(mode), style = "muted" })
-  if self.error then
-    panel:label({ text = self.error, style = "danger" })
+  if self.error or not self.pages then
+    panel:label({ text = self:status_line(self:mode_label()), style = "muted" })
+    panel:label({ text = self.error or ("Reading " .. basename(self.path) .. "..."), style = self.error and "danger" or "muted" })
     return
   end
-  if not self.pages then
-    panel:label({ text = "Reading " .. basename(self.path) .. "...", style = "muted" })
-    return
+  if self.mode == "width" then
+    self:layout_width(cols, rows, g)
   end
-  if mode == "image" then
-    self:render_image(panel, cols, rows, g)
+  panel:label({ text = self:status_line(self:mode_label()), style = "muted" })
+  if self.mode == "page" then
+    self:render_page(panel, cols, rows, g)
+  elseif self.mode == "width" then
+    self:render_width(panel)
   else
     self:render_text(panel, rows)
   end
 end
 
-function View:go_to(page)
+function View:go_to(page, scroll)
   if not self.pages then
     return false
   end
@@ -246,24 +312,50 @@ function View:go_to(page)
   if page ~= self.page then
     self.page = page
     self.text_offset = 0
+    self.scroll_rows = scroll or 0
   end
   return true
 end
 
 function View:scroll(delta)
-  self.text_offset = math.max(0, self.text_offset + delta)
+  if self.mode == "width" then
+    self.scroll_rows = math.max(0, self.scroll_rows + delta)
+  else
+    self.text_offset = math.max(0, self.text_offset + delta)
+  end
   return true
+end
+
+-- In fit-width a screen step scrolls within the page and only crosses to the next or previous page at its edges.
+function View:screen_down()
+  if self.mode ~= "width" or not self.layout then
+    return self:go_to(self.page + 1)
+  end
+  if self.scroll_rows >= self.layout.max_scroll then
+    return self:go_to(self.page + 1)
+  end
+  return self:scroll(self.layout.visible)
+end
+
+function View:screen_up()
+  if self.mode ~= "width" or not self.layout then
+    return self:go_to(self.page - 1)
+  end
+  if self.scroll_rows <= 0 then
+    return self:go_to(self.page - 1, math.huge)
+  end
+  return self:scroll(-self.layout.visible)
 end
 
 local KEYS = {
   n = function(v) return v:go_to(v.page + 1) end,
-  [" "] = function(v) return v:go_to(v.page + 1) end,
-  PgDn = function(v) return v:go_to(v.page + 1) end,
   Right = function(v) return v:go_to(v.page + 1) end,
   p = function(v) return v:go_to(v.page - 1) end,
-  b = function(v) return v:go_to(v.page - 1) end,
-  PgUp = function(v) return v:go_to(v.page - 1) end,
   Left = function(v) return v:go_to(v.page - 1) end,
+  [" "] = function(v) return v:screen_down() end,
+  PgDn = function(v) return v:screen_down() end,
+  b = function(v) return v:screen_up() end,
+  PgUp = function(v) return v:screen_up() end,
   g = function(v) return v:go_to(1) end,
   Home = function(v) return v:go_to(1) end,
   G = function(v) return v:go_to(v.pages or 1) end,
@@ -272,6 +364,11 @@ local KEYS = {
   Down = function(v) return v:scroll(1) end,
   k = function(v) return v:scroll(-1) end,
   Up = function(v) return v:scroll(-1) end,
+  w = function(v)
+    v.fit = v.fit == "width" and "page" or "width"
+    v.scroll_rows = 0
+    return true
+  end,
   t = function(v)
     v.text_mode = not v.text_mode
     return true
@@ -289,10 +386,11 @@ function View:on_event(ev)
     local action = KEYS[ev.key]
     handled = action ~= nil and action(self)
   elseif ev.type == "mouse" then
+    local paging = self.mode == "page"
     if ev.button == "wheel_down" then
-      handled = self.text_mode and self:scroll(3) or self:go_to(self.page + 1)
+      handled = paging and self:go_to(self.page + 1) or self:scroll(3)
     elseif ev.button == "wheel_up" then
-      handled = self.text_mode and self:scroll(-3) or self:go_to(self.page - 1)
+      handled = paging and self:go_to(self.page - 1) or self:scroll(-3)
     end
   end
   if handled then
