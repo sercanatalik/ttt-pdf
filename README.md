@@ -68,7 +68,7 @@ git clone https://github.com/sercanatalik/ttt-pdf ~/.config/ttt/plugins/pdf-view
 | `w` | Switch between **fit page** (whole page visible) and **fit width** (page as wide as the tab, scroll vertically) |
 | `j` / `k`, `↓` / `↑`, mouse wheel | Scroll (fit width and text); the wheel turns pages in fit page |
 | `t` | Toggle between the page image and its text |
-| `r` | Reload the file (after rebuilding a LaTeX document, for example) |
+| `r` | Reload the file now. Usually not needed: the viewer reloads by itself when the PDF changes on disk |
 
 ## Permissions
 
@@ -76,6 +76,7 @@ git clone https://github.com/sercanatalik/ttt-pdf ~/.config/ttt/plugins/pdf-view
 |------------|-----|
 | `editor.file_handlers` | Open `.pdf` files (and files starting with `%PDF-`) in this viewer instead of the binary file card. |
 | `keybindings` | Show the `:` go-to-page prompt (`ttt.command_line`). The plugin binds no global keys; its keys only work while a PDF tab is focused. |
+| `events.file` | Know when a PDF tab closes, so it stops watching that file for changes. |
 | `system.exec`: `pdfinfo`, `pdftoppm`, `pdftotext` | Read the page count and size, render a page to PNG, and extract a page's text. No other programs are run. |
 
 The plugin reads no other files, makes no network requests, and stores nothing.
@@ -87,6 +88,7 @@ The plugin reads no other files, makes no network requests, and stores nothing.
 - **Fit width** picks the resolution that makes the page as wide as the tab and renders only the visible slice (`pdftoppm -x -y -W -H`), so tall pages never get rasterized in full. Scrolling renders the next slice, which is fetched ahead of time.
 - The PNG goes to `panel:image`, which sends it to the terminal once. The current page and its neighbours stay cached, and the next page is rendered ahead of time.
 - In text mode, `pdftotext -layout` extracts just the current page.
+- **Auto-reload:** while a PDF tab is open, `pdfinfo` runs once a second. Its output includes the page count, file size, page size and modification dates, so a rebuild changes it. A change is only applied once two checks in a row agree, and a check that fails (file missing or still being written) is ignored. That way a LaTeX build in progress never shows a broken page. The reload keeps your page, scroll position and fit mode, and the old image stays up until the new one is rendered.
 - All poppler calls run asynchronously, so a slow page never blocks the editor. A reload drops results that were still in flight.
 
 ## Limitations
@@ -106,9 +108,9 @@ TTT_BIN=/path/to/ttt tests/run.sh
 `tests/run.sh` installs the plugin into a throwaway config with its manifest permissions, then drives the real `ttt` binary:
 
 - **Text mode**, headlessly with `--exec`: opening, paging and its bounds, go to page, reload, a corrupt file, and missing poppler.
-- **Image mode**, with `tests/kitty.py` (needs `python3`): it runs ttt in a pseudo-terminal that reports pixel sizes the way Ghostty does, drives it over `--listen` (port 4242 must be free), and decodes the Kitty graphics commands ttt sends. The checks cover fit page, fit width, scrolling across pages, and that idle redraws send nothing. Decoded images land in the temp dir, which is handy when debugging.
+- **Image mode**, with `tests/kitty.py` (needs `python3`): it runs ttt in a pseudo-terminal that reports pixel sizes the way Ghostty does, drives it over `--listen` (port 4242 must be free), and decodes the Kitty graphics commands ttt sends. The checks cover fit page, fit width, scrolling across pages, that idle redraws send nothing, and auto-reload (a half-written file is ignored; a rebuilt one reloads in place). Decoded images land in the temp dir, which is handy when debugging.
 
-`tests/make_fixture.py` regenerates `tests/fixtures/sample.pdf`.
+`tests/make_fixture.py` regenerates the fixtures in `tests/fixtures/`.
 
 ## License
 

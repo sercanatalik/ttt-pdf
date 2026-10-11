@@ -16,7 +16,7 @@ CFG="$WORK/config"
 mkdir -p "$CFG/plugins/pdf-viewer"
 cp "$ROOT/plugin.ttt.json" "$ROOT/init.lua" "$CFG/plugins/pdf-viewer/"
 cat > "$CFG/plugins.ttt.json" <<'JSON'
-[{"name":"pdf-viewer","version":"0.1.0","enabled":true,"permissions":{"editor.file_handlers":true,"keybindings":true,"system.exec":["pdfinfo","pdftoppm","pdftotext"]}}]
+[{"name":"pdf-viewer","version":"0.1.0","enabled":true,"permissions":{"editor.file_handlers":true,"keybindings":true,"events.file":true,"system.exec":["pdfinfo","pdftoppm","pdftotext"]}}]
 JSON
 
 failures=0
@@ -96,6 +96,33 @@ if command -v python3 >/dev/null; then
     fail "image mode session"
   fi
   [ "$failures" -gt 0 ] && sed 's/^/        | /' "$WORK/gfx.log" >&2
+
+  LIVE="$WORK/live"
+  mkdir -p "$LIVE"
+  cp "$FIXTURES/sample.pdf" "$LIVE/doc.pdf"
+  if python3 -I "$ROOT/tests/kitty.py" "$TTT_BIN" "$LIVE" "$CFG" doc.pdf 120x40 10x20 "$WORK/reload" \
+      "MARK open" 'wait-for "[fit page]"; click 70 20; type G; wait-for "page 3/3"; wait 1000' \
+      "SH head -c 400 '$FIXTURES/short.pdf' > doc.pdf.tmp && mv doc.pdf.tmp doc.pdf" \
+      "MARK partial" "wait 2500; screenshot $WORK/reload-partial.txt" \
+      "SH cp '$FIXTURES/short.pdf' doc.pdf.tmp && mv doc.pdf.tmp doc.pdf" \
+      "MARK reloaded" "wait-for \"page 2/2\"; wait 1200; screenshot $WORK/reload-done.txt" \
+      "MARK text" 'key t; wait-for "Echo page"' \
+      "MARK end" >"$WORK/reload.log" 2>&1; then
+    if grep -qF "page 3/3" "$WORK/reload-partial.txt" && ! grep -qiE "failed|error" "$WORK/reload-partial.txt"; then
+      pass "a half-written file is ignored and the page stays up"
+    else
+      fail "a half-written file is ignored and the page stays up"
+    fi
+    if grep -qF "[fit page]" "$WORK/reload-done.txt" && grep -q "^\[reloaded\] a=t" "$WORK/reload.log"; then
+      pass "a rebuilt PDF reloads by itself, keeping the fit mode and clamping the page"
+    else
+      fail "a rebuilt PDF reloads by itself, keeping the fit mode and clamping the page"
+    fi
+    pass "the reloaded file's text shows in text mode"
+  else
+    fail "auto-reload session"
+    sed 's/^/        | /' "$WORK/reload.log" >&2
+  fi
 else
   echo "  skip  image mode (python3 not found)"
 fi

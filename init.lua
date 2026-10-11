@@ -2,6 +2,7 @@ local ttt = require("ttt")
 local sys = require("ttt.system")
 
 local MIN_DPI, MAX_DPI, DPI_STEP = 24, 300, 8
+local POLL_MS = 1000
 local HINTS = "n/p page  : go to  w fit  t text  r reload"
 local INSTALL_HINT = "Install poppler: brew install poppler | apt install poppler-utils | dnf install poppler-utils"
 
@@ -109,19 +110,77 @@ function View:run(binary, args, key, on_success)
   end)
 end
 
+function View:apply_info(stdout)
+  local pages, w, h = parse_info(stdout)
+  if not pages or pages < 1 then
+    return false
+  end
+  self.fingerprint = stdout
+  self.pages = pages
+  self.page = math.min(self.page, pages)
+  if w and h and w > 0 and h > 0 then
+    self.width, self.height = w, h
+  end
+  return true
+end
+
 function View:load_info()
   self:run("pdfinfo", { self.path }, "info", function(stdout)
-    local pages, w, h = parse_info(stdout)
-    if not pages or pages < 1 then
+    if not self:apply_info(stdout) then
       self.error = "pdfinfo did not report a page count for " .. basename(self.path)
-      return
-    end
-    self.pages = pages
-    self.page = math.min(self.page, pages)
-    if w and h and w > 0 and h > 0 then
-      self.width, self.height = w, h
     end
   end)
+end
+
+-- pdfinfo's output (page count, file size, page size, modification dates) changes whenever the file is rebuilt,
+-- and is cheap enough to poll. A change only counts once two polls agree, so a half-written file is never loaded.
+function View:poll()
+  if self.polling then
+    return
+  end
+  self.polling = true
+  sys.exec_async("pdfinfo", { self.path }, function(result)
+    self.polling = false
+    if self.stopped or result.exit_code ~= 0 or result.stdout == self.fingerprint then
+      self.candidate = nil
+      return
+    end
+    if self.candidate ~= result.stdout then
+      self.candidate = result.stdout
+      return
+    end
+    self.candidate = nil
+    self:refresh(result.stdout)
+  end)
+end
+
+-- Unlike r, a refresh keeps the last image on screen until the new render arrives, so a rebuild never flashes an empty tab.
+function View:refresh(stdout)
+  local page = self.page
+  self.generation = self.generation + 1
+  self.pending = {}
+  self.images = {}
+  self.texts = {}
+  self.error = nil
+  if not self:apply_info(stdout) then
+    self.error = "pdfinfo did not report a page count for " .. basename(self.path)
+  end
+  if self.page ~= page and self.shown then
+    self.shown = nil
+  end
+  self:redraw()
+end
+
+function View:watch()
+  self.timer = ttt.set_interval(POLL_MS, function() self:poll() end)
+end
+
+function View:stop()
+  self.stopped = true
+  if self.timer then
+    ttt.clear_interval(self.timer)
+    self.timer = nil
+  end
 end
 
 function View:fetch(key, entry, args)
@@ -440,6 +499,18 @@ function View:on_event(ev)
   return handled
 end
 
+local views = {}
+
+-- Polling has to stop when its tab closes; without the events.file permission (an older approval) auto-reload stays off rather than leak timers.
+local watching = pcall(function()
+  require("ttt.events").on("file.close", function(path)
+    if views[path] then
+      views[path]:stop()
+      views[path] = nil
+    end
+  end)
+end)
+
 ttt.register({
   file_handlers = {
     {
@@ -450,6 +521,13 @@ ttt.register({
       open = function(path, tab)
         local view = new_view(path)
         view:load_info()
+        if watching then
+          if views[path] then
+            views[path]:stop()
+          end
+          views[path] = view
+          view:watch()
+        end
         tab.render = function(panel) view:render(panel) end
         tab.on_event = function(ev) return view:on_event(ev) end
       end,

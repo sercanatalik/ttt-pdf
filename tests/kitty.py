@@ -2,7 +2,8 @@
 and prints every Kitty graphics command it sent, grouped by step.
 
 Usage: kitty.py TTT_BIN WORKDIR CONFIG_DIR FILE COLSxROWS CELL_WxCELL_H OUTDIR STEP...
-A STEP is an --exec script for ttt, "MARK name" to start a new group, or "RESIZE COLSxROWS".
+A STEP is an --exec script for ttt, "MARK name" to start a new group, "RESIZE COLSxROWS",
+or "SH command" to run a shell command in WORKDIR (to change files while ttt runs).
 Transmitted images are written to OUTDIR as PNGs.
 """
 import base64
@@ -13,6 +14,7 @@ import re
 import select
 import signal
 import struct
+import subprocess
 import sys
 import termios
 import threading
@@ -137,6 +139,8 @@ def main():
                 time.sleep(0.3)
                 with lock:
                     marks.append((step[5:], len(stream)))
+            elif step.startswith("SH "):
+                subprocess.run(step[3:], shell=True, cwd=workdir, check=True)
             elif step.startswith("RESIZE "):
                 cols, rows = map(int, step[7:].split("x"))
                 set_size(fd, cols, rows, cw, ch)

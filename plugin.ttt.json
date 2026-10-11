@@ -8,6 +8,7 @@
   "permissions": {
     "editor.file_handlers": true,
     "keybindings": true,
+    "events.file": true,
     "system.exec": ["pdfinfo", "pdftoppm", "pdftotext"]
   }
 }
