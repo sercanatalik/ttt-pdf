@@ -1,7 +1,7 @@
 {
   "name": "pdf-viewer",
   "displayName": "PDF Viewer",
-  "description": "Quick-look PDF pages in an editor tab, with a text fallback for terminals without graphics",
+  "description": "View and search PDFs in an editor tab, with fit width and auto-reload, falling back to text in terminals without graphics",
   "version": "0.3.0",
   "author": "sercanatalik",
   "entry": "init.lua",
