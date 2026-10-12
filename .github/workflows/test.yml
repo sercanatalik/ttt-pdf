@@ -9,10 +9,8 @@ on:
     - cron: "0 6 * * 1"
 
 env:
-  # The plugin needs ttt's file handlers and image widget (eugenioenko/ttt#813).
-  # Switch to eugenioenko/ttt@main once they are merged.
-  TTT_REPO: sercanatalik/ttt
-  TTT_REF: feat/plugin-image-widget
+  TTT_REPO: eugenioenko/ttt
+  TTT_REF: main
 
 jobs:
   test:

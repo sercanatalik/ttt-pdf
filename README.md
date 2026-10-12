@@ -8,11 +8,11 @@ Quick-look PDFs inside [ttt](https://github.com/eugenioenko/ttt). Open a `.pdf` 
   <img src="docs/screenshot.png" alt="A page of a research paper rendered inside a ttt editor tab in Ghostty, with the status line showing page 2/15 and the viewer's keys" width="640">
 </p>
 
-> **Status:** early. It needs a ttt build with plugin file handlers and the image widget, proposed in [eugenioenko/ttt#813](https://github.com/eugenioenko/ttt/issues/813). Older ttt versions keep showing PDFs as binary files.
+> **Status:** early. It needs ttt's plugin file handlers and image widget ([eugenioenko/ttt#813](https://github.com/eugenioenko/ttt/issues/813)), which are on ttt's `main` and not yet in a release. Older ttt versions keep showing PDFs as binary files.
 
 ## Requirements
 
-- ttt with plugin file handlers (and `ttt.graphics()` for page images)
+- ttt newer than 1.7.1, which for now means a build of [ttt's `main`](https://github.com/eugenioenko/ttt)
 - [poppler](https://poppler.freedesktop.org/) command-line tools: `pdfinfo`, `pdftoppm`, `pdftotext`
 
 | Platform | Install poppler |
@@ -41,7 +41,7 @@ git clone https://github.com/sercanatalik/ttt-pdf ~/.config/ttt/plugins/pdf-view
    herdr plugin install eugenioenko/ttt/herdr-plugin
    ```
 
-   It runs the `ttt` on your `PATH` with your normal ttt config, so install pdf-viewer [as above](#install). Until [eugenioenko/ttt#813](https://github.com/eugenioenko/ttt/issues/813) is merged, that `ttt` has to be a build of [`sercanatalik/ttt@feat/plugin-image-widget`](https://github.com/sercanatalik/ttt/tree/feat/plugin-image-widget).
+   It runs the `ttt` on your `PATH` with your normal ttt config, so install pdf-viewer [as above](#install). That `ttt` has to meet the [requirements](#requirements) too.
 
 2. Turn on herdr's Kitty graphics support. It's experimental and needs herdr 0.5.9 or newer:
 
