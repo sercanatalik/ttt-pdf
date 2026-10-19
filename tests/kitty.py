@@ -91,11 +91,15 @@ def emit(ev, outdir, count, group):
     fields = " ".join(f"{k}={v}" for k, v in p.items() if k not in ("q", "m"))
     line = f"[{group(ev['pos'])}] {fields}"
     if a == "t":
-        raw = base64.b64decode(b"".join(ev["chunks"]))
+        payload = b"".join(ev["chunks"])
+        raw = base64.b64decode(payload)
+        # ttt sends the pixels zlib-compressed (o=z) since it started compressing them; older builds send them raw.
+        if p.get("o") == "z":
+            raw = zlib.decompress(raw)
         w, h = int(p["s"]), int(p["v"])
         path = os.path.join(outdir, f"img{count}.png")
         write_png(path, w, h, raw)
-        line += f" png={os.path.basename(path)}"
+        line += f" sent={len(payload)} png={os.path.basename(path)}"
     print(line)
 
 

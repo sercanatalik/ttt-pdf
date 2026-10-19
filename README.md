@@ -100,7 +100,7 @@ The plugin reads no other files, makes no network requests, and stores nothing.
 
 - One page at a time in fit page; fit width scrolls within a page and steps to the next one. No arbitrary zoom levels or links.
 - Search doesn't match across pages, or join a word hyphenated at the end of a line (`exam-` / `ple` is found as `exam- ple`).
-- In fit width each scroll step sends a new slice to the terminal (about 1 MB per screen at 1200 px wide), which is fine locally but slow over SSH. A screen with a search match is sent twice, plain and then highlighted.
+- In fit width each scroll step sends a new slice to the terminal. ttt 1.8.0 sends images as raw pixels, about 4 MB per screen at 1200 px wide, which is fine locally but slow over SSH; [eugenioenko/ttt#1020](https://github.com/eugenioenko/ttt/pull/1020) compresses them, to about 0.3 MB for a page of dense text. A screen with a search match is sent twice, plain and then highlighted.
 - Page images need a terminal with the Kitty graphics protocol. They work inside herdr with `kitty_graphics` enabled, but not inside tmux.
 - Password-protected PDFs (ones that need a password to open) aren't supported yet; the tab says so. PDFs that only restrict printing or copying open normally.
 - Scanned PDFs have no text, so text mode shows nothing for them.
