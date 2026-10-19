@@ -10,12 +10,17 @@ on:
 
 env:
   TTT_REPO: eugenioenko/ttt
-  TTT_REF: main
 
 jobs:
   test:
+    name: test (ttt ${{ matrix.ttt-ref }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported release, and main for early warning of changes.
+        ttt-ref: [v1.8.0, main]
     steps:
       - uses: actions/checkout@v7
 
@@ -23,7 +28,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ${{ env.TTT_REPO }}
-          ref: ${{ env.TTT_REF }}
+          ref: ${{ matrix.ttt-ref }}
           path: .ttt
 
       - uses: actions/setup-go@v7

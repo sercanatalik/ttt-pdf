@@ -8,11 +8,11 @@ Quick-look PDFs inside [ttt](https://github.com/eugenioenko/ttt). Open a `.pdf` 
   <img src="docs/screenshot.png" alt="A page of a research paper rendered inside a ttt editor tab in Ghostty, with the status line showing page 2/15 and the viewer's keys" width="640">
 </p>
 
-> **Status:** early. It needs ttt's plugin file handlers and image widget ([eugenioenko/ttt#813](https://github.com/eugenioenko/ttt/issues/813)), which are on ttt's `main` and not yet in a release. Older ttt versions keep showing PDFs as binary files.
+> **Status:** early. It needs ttt's plugin file handlers and image widget, added in [ttt 1.8.0](https://github.com/eugenioenko/ttt/releases/tag/v1.8.0). Older ttt versions keep showing PDFs as binary files.
 
 ## Requirements
 
-- ttt newer than 1.7.1, which for now means a build of [ttt's `main`](https://github.com/eugenioenko/ttt)
+- [ttt](https://github.com/eugenioenko/ttt) 1.8.0 or newer
 - [poppler](https://poppler.freedesktop.org/) command-line tools: `pdfinfo`, `pdftoppm`, `pdftotext`
 
 | Platform | Install poppler |
