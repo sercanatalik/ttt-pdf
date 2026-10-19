@@ -4,6 +4,7 @@
 - short.pdf: two pages, Delta and Echo (the "rebuilt" document in the auto-reload test)
 - mixed.pdf: a portrait page, a landscape page, and a portrait page rotated 90 degrees
 - encrypted.pdf: one page that needs the user password "secret" (40-bit RC4, standard security handler)
+- search.pdf: a phrase that wraps onto the next line and a word halfway down page 1, a page with no text, and a third page
 """
 import hashlib
 import pathlib
@@ -16,6 +17,11 @@ FIXTURES = {
     "short.pdf": [("Delta page", LETTER, 0), ("Echo page", LETTER, 0)],
     "mixed.pdf": [("Portrait page", LETTER, 0), ("Landscape page", LANDSCAPE, 0), ("Rotated page", LETTER, 90)],
     "encrypted.pdf": [("Secret page", LETTER, 0)],
+    "search.pdf": [
+        ("Search page", LETTER, 0, [(200, "Phrases can wrap from the end of one"), (218, "line onto the start of the next."), (450, "Midway marker")]),
+        (None, LETTER, 0),
+        ("Final words", LETTER, 0),
+    ],
 }
 ENCRYPTED = {"encrypted.pdf": ("secret", "owner")}
 
@@ -65,8 +71,13 @@ def build(pages, passwords=None):
     objs = {1: b"<< /Type /Catalog /Pages 2 0 R >>", 3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"}
     kids = []
     num = 4
-    for title, (w, h), rotate in pages:
-        text = f"BT /F1 36 Tf 72 {h - 92} Td ({title}) Tj 0 -60 Td /F1 14 Tf (Rendered by the ttt pdf-viewer test suite.) Tj ET".encode()
+    for title, (w, h), rotate, *extra in pages:
+        text = b""
+        if title:
+            text = f"BT /F1 36 Tf 72 {h - 92} Td ({title}) Tj 0 -60 Td /F1 14 Tf (Rendered by the ttt pdf-viewer test suite.) Tj ET".encode()
+        # Extra lines are (distance from the top of the page, text) at 14 pt.
+        for top, line in extra[0] if extra else []:
+            text += f" BT /F1 14 Tf 72 {h - top} Td ({line}) Tj ET".encode()
         if key:
             text = rc4(object_key(key, num), text)
         objs[num] = b"<< /Length %d >>\nstream\n" % len(text) + text + b"\nendstream"

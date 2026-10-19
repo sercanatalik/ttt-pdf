@@ -82,6 +82,21 @@ run search_wrap sample.pdf 'wait-for "Alpha page"; type G; wait-for "Charlie pag
 run search_none sample.pdf 'wait-for "Alpha page"; type /; type zebra; key enter; wait-for "No matches"' && \
   expect search_none "page 1/3" "a search with no matches says so and stays put" || fail "search with no matches"
 
+run search_phrase search.pdf 'wait-for "Search page"; type G; wait-for "Final words"; type /; type "end of one line"; key enter; wait-for "match 1/1"' && \
+  expect search_phrase "page 1/3" "a phrase that wraps onto the next line is found" || fail "search across lines"
+
+run search_after_empty search.pdf 'wait-for "Search page"; type /; type "final words"; key enter; wait-for "match 1/1"' && \
+  expect search_after_empty "page 3/3" "a match after a page with no text lands on its own page" || fail "search after an empty page"
+
+run search_scroll search.pdf 'wait-for "Search page"; type /; type midway; key enter; wait-for "match 1/1"; wait 150' && {
+  if grep -qF "Midway marker" "$WORK/search_scroll.txt" && ! grep -qF "Search page" "$WORK/search_scroll.txt"; then
+    pass "text mode scrolls to the matching line"
+  else
+    fail "text mode scrolls to the matching line"
+    sed 's/^/        | /' "$WORK/search_scroll.txt" >&2
+  fi
+} || fail "search scroll in text mode"
+
 printf '\x00\x01\x02not a pdf\xff' > "$FIXTURES/broken.pdf"
 run broken broken.pdf 'wait-for "pdfinfo failed"' && \
   expect broken "pdfinfo failed" "a corrupt file shows the pdfinfo error" || fail "broken"
@@ -142,6 +157,23 @@ if command -v python3 >/dev/null; then
   else
     fail "mixed page sizes session"
     sed 's/^/        | /' "$WORK/mixed.log" >&2
+  fi
+
+  # "Midway marker" starts 440 pt down the page: at 136 DPI that is row 41 of 75, a third of the tab below the top of the view.
+  if python3 -I "$ROOT/tests/kitty.py" "$TTT_BIN" "$FIXTURES" "$CFG" search.pdf 120x40 10x20 "$WORK/find" \
+      "MARK width" 'wait-for "[fit page]"; click 70 20; key w; wait-for "fit width 0%"; wait 800' \
+      "MARK find" "type /; wait-for \"Search:\"; type midway; key enter; wait-for \"match 1/1\"; wait 800; screenshot $WORK/find.txt" \
+      "MARK end" >"$WORK/find.log" 2>&1; then
+    pct=$(grep -oE "fit width [0-9]+%" "$WORK/find.txt" | grep -oE "[0-9]+" || echo 0)
+    if [ "$pct" -ge 60 ] && [ "$pct" -le 85 ]; then
+      pass "fit width scrolls to where the match is on the page"
+    else
+      fail "fit width scrolls to where the match is on the page (at ${pct}%)"
+      sed 's/^/        | /' "$WORK/find.txt" >&2
+    fi
+  else
+    fail "search in fit width session"
+    sed 's/^/        | /' "$WORK/find.log" >&2
   fi
 
   LIVE="$WORK/live"

@@ -81,6 +81,105 @@ local function split_pages(stdout, count)
   return pages
 end
 
+local ENTITIES = { amp = "&", lt = "<", gt = ">", quot = '"', apos = "'" }
+
+local function unescape(text)
+  return (text:gsub("&(%a+);", ENTITIES))
+end
+
+local function collapse(text)
+  return (text:lower():gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""))
+end
+
+local function positions(text, marker)
+  local list, from = {}, 1
+  while true do
+    local at = text:find(marker, from, true)
+    if not at then
+      return list
+    end
+    list[#list + 1] = at
+    from = at + #marker
+  end
+end
+
+-- pdftotext -bbox-layout lists each page's words in reading order, with boxes in points in the page's rendered orientation.
+-- A page keeps its words joined into one lowercase string, so a phrase is found even when it wraps onto the next line,
+-- plus where each word starts in that string, its top edge, and which of the page's lines it is on.
+-- Parsing runs on the UI thread and a long document's XML runs to tens of megabytes, so it is one pass over the words
+-- (in poppler's fixed attribute order), placed on their page and line by where the <page> and <line> tags are.
+local function parse_words(stdout)
+  stdout = stdout:lower()
+  local page_at, line_at = positions(stdout, "<page "), positions(stdout, "<line ")
+  local pages = {}
+  for i = 1, #page_at do
+    pages[i] = { parts = {}, starts = {}, ys = {}, line_of = {}, lines = {}, line_count = 0, pos = 1 }
+  end
+  local p, l = 0, 0
+  for at, y, text in stdout:gmatch('()<word xmin="[^"]*" ymin="([^"]*)" xmax="[^"]*" ymax="[^"]*">([^<]*)</word>') do
+    while page_at[p + 1] and page_at[p + 1] < at do
+      p = p + 1
+    end
+    local page, new_line = pages[p], false
+    while line_at[l + 1] and line_at[l + 1] < at do
+      l, new_line = l + 1, true
+    end
+    if new_line then
+      page.line_count = page.line_count + 1
+    end
+    text = unescape(text)
+    local n = #page.parts + 1
+    page.parts[n], page.starts[n], page.ys[n], page.line_of[n] = text, page.pos, tonumber(y), page.line_count
+    page.pos = page.pos + #text + 1
+  end
+  for _, page in ipairs(pages) do
+    local parts, first = page.parts, 1
+    for n = 1, #parts do
+      if page.line_of[n + 1] ~= page.line_of[n] then
+        page.lines[#page.lines + 1] = table.concat(parts, " ", first, n)
+        first = n + 1
+      end
+    end
+    page.text = table.concat(parts, " ")
+    page.parts, page.line_count, page.pos = nil, nil, nil
+  end
+  return pages
+end
+
+-- The word containing position pos of a page's text: the last one starting at or before it.
+local function word_at(starts, pos)
+  local lo, hi = 1, #starts
+  while lo < hi do
+    local mid = math.floor((lo + hi + 1) / 2)
+    if starts[mid] <= pos then
+      lo = mid
+    else
+      hi = mid - 1
+    end
+  end
+  return lo
+end
+
+-- -layout and -bbox-layout come from the same text analysis, so each bbox line appears within one layout line
+-- (a multi-column layout line holds one line from each column). Searching on from the last hit keeps repeated lines in order.
+local function map_lines(lines, layout)
+  local collapsed = {}
+  for i, l in ipairs(layout) do
+    collapsed[i] = collapse(l)
+  end
+  local map, cursor = {}, 1
+  for n, text in ipairs(lines) do
+    for k = 0, #collapsed - 1 do
+      local i = (cursor - 1 + k) % #collapsed + 1
+      if collapsed[i]:find(text, 1, true) then
+        map[n], cursor = i, i
+        break
+      end
+    end
+  end
+  return map
+end
+
 -- Rounding down to DPI_STEP keeps small resizes from re-rendering; contain-fit never upscales, so a slightly smaller image still fits.
 local function dpi_for(view, page, cols, rows, g)
   local w, h = view:page_size(page)
@@ -110,6 +209,7 @@ function View:reset()
   self.shown = nil
   self.texts = {}
   self.doc = nil
+  self.words = nil
   if self.search then
     self.search.matches = nil
   end
@@ -216,6 +316,7 @@ function View:refresh(stdout)
   self.images = {}
   self.texts = {}
   self.doc = nil
+  self.words = nil
   if self.search then
     self.search.matches = nil
   end
@@ -280,16 +381,50 @@ function View:fetch_text(page)
   end)
 end
 
--- Search and text mode share one extraction of the whole document, so a match's line number is the line text mode shows.
+-- Search matches on the words and their positions; text mode shares the layout extraction, so a match's lines are the lines text mode shows.
 function View:load_doc(on_ready)
-  if self.doc then
-    on_ready()
-    return
+  local function ready()
+    if self.doc and self.words then
+      on_ready()
+    end
   end
-  self:run("pdftotext", { "-layout", self.path, "-" }, "doc", function(stdout)
-    self.doc = split_pages(stdout, self.pages)
-    on_ready()
-  end)
+  if not self.doc then
+    self:run("pdftotext", { "-layout", self.path, "-" }, "doc", function(stdout)
+      self.doc = split_pages(stdout, self.pages)
+      ready()
+    end)
+  end
+  if not self.words then
+    self:run("pdftotext", { "-bbox-layout", self.path, "-" }, "words", function(stdout)
+      self.words = parse_words(stdout)
+      ready()
+    end)
+  end
+  ready()
+end
+
+-- Every occurrence of needle on a page, with the top of its first word and the layout lines it covers.
+function View:find_on_page(page, needle, matches)
+  local words = self.words[page]
+  local from, map = 1, nil
+  while true do
+    local s, e = words.text:find(needle, from, true)
+    if not s then
+      return
+    end
+    map = map or map_lines(words.lines, self.doc[page] or {})
+    local first, last = word_at(words.starts, s), word_at(words.starts, e)
+    local m = { page = page, y = words.ys[first], lines = {} }
+    for n = words.line_of[first], words.line_of[last] do
+      local line = map[n]
+      if line then
+        m.lines[line] = true
+        m.line = math.min(m.line or line, line)
+      end
+    end
+    table.insert(matches, m)
+    from = e + 1
+  end
 end
 
 -- stay recomputes matches after a reload without moving the view or announcing anything.
@@ -299,14 +434,10 @@ function View:search_for(query, stay)
     if not self.search or self.search.query ~= query then
       return
     end
-    local needle = query:lower()
+    local needle = collapse(query)
     local matches = {}
-    for page, lines in ipairs(self.doc) do
-      for i, line in ipairs(lines) do
-        if line:lower():find(needle, 1, true) then
-          table.insert(matches, { page = page, line = i })
-        end
-      end
+    for page = 1, #self.words do
+      self:find_on_page(page, needle, matches)
     end
     if #matches == 0 then
       self.search = nil
@@ -332,8 +463,10 @@ end
 function View:show_match()
   local m = self.search.matches[self.search.index]
   self:go_to(m.page)
-  self.text_offset = math.max(0, m.line - 3)
-  self.match_ratio = (m.line - 1) / math.max(#self.doc[m.page], 1)
+  if m.line then
+    self.text_offset = math.max(0, m.line - 3)
+  end
+  self.match_y = m.y
 end
 
 function View:step_match(delta)
@@ -429,10 +562,10 @@ function View:layout_width(cols, rows, g)
   local page_h = math.floor(h / 72 * dpi)
   local total_rows = math.ceil(page_h / g.cell_h)
   local max_scroll = math.max(0, total_rows - visible)
-  -- A search match only knows its line, so the position is estimated from how far down the page that line is.
-  if self.match_ratio then
-    self.scroll_rows = math.floor(self.match_ratio * total_rows) - math.floor(visible / 3)
-    self.match_ratio = nil
+  -- A search match knows where its first word is on the page, so it lands a third of the way down the tab.
+  if self.match_y then
+    self.scroll_rows = math.floor(self.match_y / 72 * dpi / g.cell_h) - math.floor(visible / 3)
+    self.match_y = nil
   end
   self.scroll_rows = math.max(0, math.min(self.scroll_rows, max_scroll))
   self.layout = {
@@ -481,16 +614,22 @@ function View:render_text(panel, rows)
   self.text_offset = math.max(0, math.min(self.text_offset, #lines - visible))
   self.layout = { visible = visible, max_scroll = math.max(0, #lines - visible) }
   local s = self.search
-  local needle = s and s.matches and s.query:lower()
-  local current = needle and s.matches[s.index]
-  for i = self.text_offset + 1, math.min(#lines, self.text_offset + visible) do
-    local style = "default"
-    if current and current.page == self.page and current.line == i then
-      style = "selected"
-    elseif needle and lines[i]:lower():find(needle, 1, true) then
-      style = "warning"
+  local styles = {}
+  if s and s.matches then
+    for i, m in ipairs(s.matches) do
+      if m.page == self.page then
+        for line in pairs(m.lines) do
+          if i == s.index then
+            styles[line] = "selected"
+          elseif styles[line] ~= "selected" then
+            styles[line] = "warning"
+          end
+        end
+      end
     end
-    panel:label({ text = lines[i], style = style })
+  end
+  for i = self.text_offset + 1, math.min(#lines, self.text_offset + visible) do
+    panel:label({ text = lines[i], style = styles[i] or "default" })
   end
 end
 
@@ -523,7 +662,7 @@ function View:render(panel)
     panel:label({ text = self.error or ("Reading " .. basename(self.path) .. "..."), style = self.error and "danger" or "muted" })
     return
   end
-  if self.search and not self.search.matches and not self.pending.doc then
+  if self.search and not self.search.matches and not self.pending.doc and not self.pending.words then
     self:search_for(self.search.query, true)
   end
   if self.mode == "width" then
