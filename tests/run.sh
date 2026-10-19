@@ -159,10 +159,36 @@ if command -v python3 >/dev/null; then
     sed 's/^/        | /' "$WORK/mixed.log" >&2
   fi
 
+  # yellow LOG GROUP: how many pixels of the last image sent in GROUP are highlight yellow (red well above blue; grays and black text are not).
+  yellow() {
+    local png
+    png=$(grep -E "^\[$2\] a=t" "$1" | tail -1 | sed -E 's/.* png=//')
+    [ -n "$png" ] || { echo 0; return; }
+    python3 -I - "$3/$png" <<'PY'
+import struct, sys, zlib
+data = open(sys.argv[1], "rb").read()
+w, h = struct.unpack(">II", data[16:24])
+pos, idat = 8, b""
+while pos < len(data):
+    n, tag = struct.unpack(">I4s", data[pos:pos + 8])
+    if tag == b"IDAT":
+        idat += data[pos + 8:pos + 8 + n]
+    pos += 12 + n
+raw = zlib.decompress(idat)
+stride = 1 + w * 4
+print(sum(1 for y in range(h) for x in range(w)
+          if raw[y * stride + 1 + x * 4] > 200 and raw[y * stride + 1 + x * 4] - raw[y * stride + 3 + x * 4] > 60))
+PY
+  }
+
   # "Midway marker" starts 440 pt down the page: at 136 DPI that is row 41 of 75, a third of the tab below the top of the view.
+  # Then "the" matches four times near the top of page 1 (and once on page 3), so n moves to a match on the same screen.
   if python3 -I "$ROOT/tests/kitty.py" "$TTT_BIN" "$FIXTURES" "$CFG" search.pdf 120x40 10x20 "$WORK/find" \
       "MARK width" 'wait-for "[fit page]"; click 70 20; key w; wait-for "fit width 0%"; wait 800' \
-      "MARK find" "type /; wait-for \"Search:\"; type midway; key enter; wait-for \"match 1/1\"; wait 800; screenshot $WORK/find.txt" \
+      "MARK find" "type /; wait-for \"Search:\"; type midway; key enter; wait-for \"match 1/1\"; wait 1200; screenshot $WORK/find.txt" \
+      "MARK the" 'type /; wait-for "Search:"; key ctrl+a; type the; key enter; wait-for "match 1/5"; wait 1200' \
+      "MARK next" 'key n; wait-for "match 2/5"; wait 1200' \
+      "MARK clear" 'key escape; wait 1200' \
       "MARK end" >"$WORK/find.log" 2>&1; then
     pct=$(grep -oE "fit width [0-9]+%" "$WORK/find.txt" | grep -oE "[0-9]+" || echo 0)
     if [ "$pct" -ge 60 ] && [ "$pct" -le 85 ]; then
@@ -171,6 +197,17 @@ if command -v python3 >/dev/null; then
       fail "fit width scrolls to where the match is on the page (at ${pct}%)"
       sed 's/^/        | /' "$WORK/find.txt" >&2
     fi
+    found=$(yellow "$WORK/find.log" find "$WORK/find")
+    [ "$found" -gt 100 ] && pass "the match is highlighted on the page" || fail "the match is highlighted on the page ($found yellow pixels)"
+    next_sends=$(grep -c "^\[next\] a=t" "$WORK/find.log" || true)
+    next_yellow=$(yellow "$WORK/find.log" next "$WORK/find")
+    if [ "$next_sends" = 1 ] && [ "$next_yellow" -gt 100 ]; then
+      pass "n to a match on the same screen sends one highlighted image"
+    else
+      fail "n to a match on the same screen sends one highlighted image (sent $next_sends, $next_yellow yellow pixels)"
+    fi
+    cleared=$(yellow "$WORK/find.log" clear "$WORK/find")
+    [ "$cleared" = 0 ] && pass "Esc removes the highlight" || fail "Esc removes the highlight ($cleared yellow pixels)"
   else
     fail "search in fit width session"
     sed 's/^/        | /' "$WORK/find.log" >&2

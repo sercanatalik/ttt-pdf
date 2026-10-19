@@ -5,6 +5,8 @@ local MIN_DPI, MAX_DPI, DPI_STEP = 24, 300, 8
 local POLL_MS = 1000
 local HINTS = "n/p page  : go to  / search  w fit  t text  r reload"
 local SEARCH_HINTS = "n/N match  Esc clear"
+-- Multiplied over the page, so text stays dark: the current match in yellow, the others on the page paler.
+local HIGHLIGHT_CURRENT, HIGHLIGHT_OTHER = "1 0.84 0.2", "1 0.95 0.62"
 local INSTALL_HINT = "Install poppler: brew install poppler | apt install poppler-utils | dnf install poppler-utils"
 
 local NO_GRAPHICS = { protocol = "none", cell_w = 0, cell_h = 0 }
@@ -180,6 +182,50 @@ local function map_lines(lines, layout)
   return map
 end
 
+-- One page's word boxes in points, in the same order parse_words lists them.
+local function parse_boxes(stdout)
+  local boxes = {}
+  for x0, y0, x1, y1 in stdout:gmatch('<word xMin="([^"]*)" yMin="([^"]*)" xMax="([^"]*)" yMax="([^"]*)">') do
+    boxes[#boxes + 1] = { tonumber(x0), tonumber(y0), tonumber(x1), tonumber(y1) }
+  end
+  return boxes
+end
+
+-- Wraps a binary PPM from pdftoppm in a one-page PDF that draws it and multiplies highlight rectangles over it,
+-- so pdftoppm tints and re-encodes it as a PNG: Lua here has no bit operations to compute PNG checksums cheaply.
+-- rects are { x, y, w, h, color } in pixels from the image's top-left corner.
+local function highlight_pdf(ppm, rects)
+  local w, h, start = ppm:match("^P6%s+(%d+)%s+(%d+)%s+255%s()")
+  if not w then
+    return nil
+  end
+  local pixels = ppm:sub(start)
+  local ops = { string.format("q %s 0 0 %s 0 0 cm /Im Do Q /M gs", w, h) }
+  for _, r in ipairs(rects) do
+    ops[#ops + 1] = string.format("%s rg %.2f %.2f %.2f %.2f re f", r[5], r[1], h - r[2] - r[4], r[3], r[4])
+  end
+  local content = table.concat(ops, " ")
+  local objects = {
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    string.format("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %s %s] /Contents 4 0 R "
+      .. "/Resources << /XObject << /Im 5 0 R >> /ExtGState << /M << /BM /Multiply >> >> >> >>", w, h),
+    string.format("<< /Length %d >>\nstream\n%s\nendstream", #content, content),
+    string.format("<< /Type /XObject /Subtype /Image /Width %s /Height %s /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length %d >>\nstream\n",
+      w, h, #pixels) .. pixels .. "\nendstream",
+  }
+  local out, offsets, size = { "%PDF-1.4\n" }, {}, 9
+  for i, body in ipairs(objects) do
+    local obj = i .. " 0 obj\n" .. body .. "\nendobj\n"
+    offsets[i] = string.format("%010d 00000 n \n", size)
+    out[#out + 1] = obj
+    size = size + #obj
+  end
+  out[#out + 1] = string.format("xref\n0 %d\n0000000000 65535 f \n%s", #objects + 1, table.concat(offsets))
+  out[#out + 1] = string.format("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", #objects + 1, size)
+  return table.concat(out)
+end
+
 -- Rounding down to DPI_STEP keeps small resizes from re-rendering; contain-fit never upscales, so a slightly smaller image still fits.
 local function dpi_for(view, page, cols, rows, g)
   local w, h = view:page_size(page)
@@ -208,6 +254,7 @@ function View:reset()
   self.images = {}
   self.shown = nil
   self.texts = {}
+  self.boxes = {}
   self.doc = nil
   self.words = nil
   if self.search then
@@ -228,13 +275,13 @@ function View:redraw()
 end
 
 -- A reload bumps the generation, so results from before it are dropped instead of overwriting fresh state.
-function View:run(binary, args, key, on_success)
+function View:run(binary, args, key, on_success, opts)
   if self.pending[key] then
     return
   end
   self.pending[key] = true
   local generation = self.generation
-  sys.exec_async(binary, args, function(result)
+  sys.exec_async(binary, args, opts or {}, function(result)
     if generation ~= self.generation then
       return
     end
@@ -315,6 +362,7 @@ function View:refresh(stdout)
   self.pending = {}
   self.images = {}
   self.texts = {}
+  self.boxes = {}
   self.doc = nil
   self.words = nil
   if self.search then
@@ -349,26 +397,103 @@ function View:fetch(key, entry, args)
   if self.images[key] then
     return
   end
-  self:run("pdftoppm", args, key, function(stdout)
+  self:run("pdftoppm", { "-png", unpack(args) }, key, function(stdout)
     entry.data = stdout
     self.images[key] = entry
   end)
+end
+
+-- An image is a cache key, the entry it is cached as, and the pdftoppm arguments that render it (without the output format).
+local function page_image(view, page, dpi)
+  local p = tostring(page)
+  return "page:" .. page .. ":" .. dpi, { page = page, dpi = dpi, kind = "page", y = 0 },
+    { "-r", tostring(dpi), "-f", p, "-l", p, view.path }
+end
+
+-- pdftoppm crops while rendering, so fit-width only ever rasterizes the visible slice of a page.
+local function slice_image(view, page, dpi, y, w, h)
+  local p = tostring(page)
+  return "slice:" .. page .. ":" .. dpi .. ":" .. y .. ":" .. h, { page = page, dpi = dpi, kind = "slice", y = y },
+    { "-r", tostring(dpi), "-f", p, "-l", p, "-x", "0", "-y", tostring(y), "-W", tostring(w), "-H", tostring(h), view.path }
 end
 
 function View:fetch_page(page, dpi)
   if page < 1 or page > self.pages then
     return
   end
-  local p = tostring(page)
-  self:fetch("page:" .. page .. ":" .. dpi, { page = page, dpi = dpi, kind = "page" },
-    { "-png", "-r", tostring(dpi), "-f", p, "-l", p, self.path })
+  self:fetch(page_image(self, page, dpi))
 end
 
--- pdftoppm crops while rendering, so fit-width only ever rasterizes the visible slice of a page.
 function View:fetch_slice(page, dpi, y, w, h)
-  local p = tostring(page)
-  self:fetch("slice:" .. page .. ":" .. dpi .. ":" .. y .. ":" .. h, { page = page, dpi = dpi, kind = "slice", y = y },
-    { "-png", "-r", tostring(dpi), "-f", p, "-l", p, "-x", "0", "-y", tostring(y), "-W", tostring(w), "-H", tostring(h), self.path })
+  self:fetch(slice_image(self, page, dpi, y, w, h))
+end
+
+-- Word boxes are only needed for the page on screen, so they come from a quick extraction of that page alone.
+function View:page_boxes(page)
+  local boxes = self.boxes[page]
+  if not boxes then
+    local p = tostring(page)
+    self:run("pdftotext", { "-bbox-layout", "-f", p, "-l", p, self.path, "-" }, "boxes:" .. page, function(stdout)
+      self.boxes[page] = parse_boxes(stdout)
+    end)
+  end
+  return boxes
+end
+
+-- The rectangles covering each match on the page, one per line a match spans, in pixels from the top of an image rendered
+-- at dpi starting y pixels down the page. Nil when no match shows in it or the page's boxes are not in yet.
+function View:match_rects(page, dpi, y, h)
+  local s = self.search
+  local words = s and s.matches and self.words and self.words[page]
+  local boxes = words and self:page_boxes(page)
+  -- The two extractions should list the same words; if they disagree, a highlight could land on the wrong ones.
+  if not boxes or #boxes ~= #words.starts then
+    return nil
+  end
+  local scale, rects = dpi / 72, {}
+  for i, m in ipairs(s.matches) do
+    if m.page == page then
+      local color = i == s.index and HIGHLIGHT_CURRENT or HIGHLIGHT_OTHER
+      local n = m.first
+      while n <= m.last do
+        local x0, y0, x1, y1 = boxes[n][1], boxes[n][2], boxes[n][3], boxes[n][4]
+        local line = words.line_of[n]
+        while n < m.last and words.line_of[n + 1] == line do
+          n = n + 1
+          local b = boxes[n]
+          x0, y0, x1, y1 = math.min(x0, b[1]), math.min(y0, b[2]), math.max(x1, b[3]), math.max(y1, b[4])
+        end
+        local top, bottom = (y0 - 1) * scale - y, (y1 + 1) * scale - y
+        if bottom > 0 and top < h then
+          rects[#rects + 1] = { (x0 - 1) * scale, top, (x1 - x0 + 2) * scale, bottom - top, color }
+        end
+        n = n + 1
+      end
+    end
+  end
+  return #rects > 0 and rects or nil
+end
+
+-- The highlighted version of an image renders it as a PPM and has pdftoppm draw that again with the matches tinted.
+-- Returns its cache key, or nil when no match shows in the image.
+function View:fetch_highlight(key, entry, args, h)
+  local rects = self:match_rects(entry.page, entry.dpi, entry.y, h)
+  if not rects then
+    return nil
+  end
+  local s = self.search
+  local hkey = "hl:" .. s.index .. ":" .. s.query .. ":" .. key
+  if not self.images[hkey] then
+    self:run("pdftoppm", args, "ppm:" .. hkey, function(ppm)
+      local pdf = highlight_pdf(ppm, rects)
+      if pdf then
+        self:run("pdftoppm", { "-png", "-r", "72", "-" }, hkey, function(png)
+          self.images[hkey] = { page = entry.page, dpi = entry.dpi, kind = entry.kind, y = entry.y, data = png }
+        end, { stdin = pdf })
+      end
+    end)
+  end
+  return hkey
 end
 
 function View:fetch_text(page)
@@ -414,7 +539,7 @@ function View:find_on_page(page, needle, matches)
     end
     map = map or map_lines(words.lines, self.doc[page] or {})
     local first, last = word_at(words.starts, s), word_at(words.starts, e)
-    local m = { page = page, y = words.ys[first], lines = {} }
+    local m = { page = page, y = words.ys[first], first = first, last = last, lines = {} }
     for n = words.line_of[first], words.line_of[last] do
       local line = map[n]
       if line then
@@ -506,18 +631,26 @@ function View:prune(expected, y, span)
       self.images[key] = nil
     end
   end
-  for page in pairs(self.texts) do
-    if math.abs(page - self.page) > 1 then
-      self.texts[page] = nil
+  for _, cache in ipairs({ self.texts, self.boxes }) do
+    for page in pairs(cache) do
+      if math.abs(page - self.page) > 1 then
+        cache[page] = nil
+      end
     end
   end
 end
 
 -- While a render is in flight the last image shown stays up, but only for the same page and fit: a prefetched neighbouring slice would show the wrong part of the page.
-function View:image_for(key, kind)
-  local exact = self.images[key]
+-- A highlighted image is preferred to the plain one. While it renders, the image of the same view stays up if one is
+-- (so moving to the next match on screen doesn't flash the page without highlights), and otherwise the plain one shows.
+function View:image_for(key, kind, highlight)
+  local exact = highlight and self.images[highlight]
+  if not exact and highlight and self.shown and self.shown.key == key then
+    return self.shown.data
+  end
+  exact = exact or self.images[key]
   if exact then
-    self.shown = { page = self.page, kind = kind, data = exact.data }
+    self.shown = { page = self.page, kind = kind, key = key, data = exact.data }
     return exact.data
   end
   if self.shown and self.shown.page == self.page and self.shown.kind == kind then
@@ -545,7 +678,9 @@ function View:render_page(panel, cols, rows, g)
   if self.page < self.pages then
     self:fetch_page(self.page + 1, expected(self.page + 1))
   end
-  local png = self:image_for("page:" .. self.page .. ":" .. dpi, "page")
+  local key, entry, args = page_image(self, self.page, dpi)
+  local _, h = self:page_size(self.page)
+  local png = self:image_for(key, "page", self:fetch_highlight(key, entry, args, math.ceil(h / 72 * dpi)))
   if png then
     panel:image({ data = png, alt = "Page " .. self.page .. " of " .. self.pages })
   else
@@ -562,9 +697,13 @@ function View:layout_width(cols, rows, g)
   local page_h = math.floor(h / 72 * dpi)
   local total_rows = math.ceil(page_h / g.cell_h)
   local max_scroll = math.max(0, total_rows - visible)
-  -- A search match knows where its first word is on the page, so it lands a third of the way down the tab.
+  -- A search match knows where its first word is on the page. One already on screen stays put, so stepping between
+  -- matches on the same screen only redraws the highlight; any other lands a third of the way down the tab.
   if self.match_y then
-    self.scroll_rows = math.floor(self.match_y / 72 * dpi / g.cell_h) - math.floor(visible / 3)
+    local row = math.floor(self.match_y / 72 * dpi / g.cell_h)
+    if row < self.scroll_rows or row >= self.scroll_rows + visible - 1 then
+      self.scroll_rows = row - math.floor(visible / 3)
+    end
     self.match_y = nil
   end
   self.scroll_rows = math.max(0, math.min(self.scroll_rows, max_scroll))
@@ -587,7 +726,8 @@ function View:render_width(panel)
   if next_y > l.y then
     self:fetch_slice(self.page, l.dpi, next_y, l.slice_w, l.span)
   end
-  local png = self:image_for("slice:" .. self.page .. ":" .. l.dpi .. ":" .. l.y .. ":" .. l.span, "slice")
+  local key, entry, args = slice_image(self, self.page, l.dpi, l.y, l.slice_w, l.span)
+  local png = self:image_for(key, "slice", self:fetch_highlight(key, entry, args, l.span))
   if png then
     panel:image({ data = png, alt = "Page " .. self.page .. " of " .. self.pages })
   else

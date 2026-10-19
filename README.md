@@ -65,7 +65,7 @@ git clone https://github.com/sercanatalik/ttt-pdf ~/.config/ttt/plugins/pdf-view
 | `b` / `PgUp` | Previous screen: scrolls up, then continues at the bottom of the previous page |
 | `g` / `Home`, `G` / `End` | First / last page |
 | `:` | Go to a page: a number, `$` for the last page, or `+N` / `-N` relative to the current one |
-| `/` | Search the document (case-insensitive), including phrases that wrap onto the next line. Jumps to the first match on or after the current page |
+| `/` | Search the document (case-insensitive), including phrases that wrap onto the next line. Jumps to the first match on or after the current page and highlights the matches |
 | `n` / `N` | Next / previous match, wrapping around the document |
 | `Esc` | Clear the search, so `n` turns pages again |
 | `w` | Switch between **fit page** (whole page visible) and **fit width** (page as wide as the tab, scroll vertically) |
@@ -80,7 +80,7 @@ git clone https://github.com/sercanatalik/ttt-pdf ~/.config/ttt/plugins/pdf-view
 | `editor.file_handlers` | Open `.pdf` files (and files starting with `%PDF-`) in this viewer instead of the binary file card. |
 | `keybindings` | Show the `:` go-to-page prompt (`ttt.command_line`). The plugin binds no global keys; its keys only work while a PDF tab is focused. |
 | `events.file` | Know when a PDF tab closes, so it stops watching that file for changes. |
-| `system.exec`: `pdfinfo`, `pdftoppm`, `pdftotext` | Read the page count and size, render a page to PNG, and extract a page's text. No other programs are run. |
+| `system.exec`: `pdfinfo`, `pdftoppm`, `pdftotext` | Read the page count and size, render a page to PNG (and draw search highlights on it), and extract a page's text and word positions. No other programs are run. |
 
 The plugin reads no other files, makes no network requests, and stores nothing.
 
@@ -91,16 +91,16 @@ The plugin reads no other files, makes no network requests, and stores nothing.
 - **Fit width** picks the resolution that makes the page as wide as the tab and renders only the visible slice (`pdftoppm -x -y -W -H`), so tall pages never get rasterized in full. Scrolling renders the next slice, which is fetched ahead of time.
 - The PNG goes to `panel:image`, which sends it to the terminal once. The current page and its neighbours stay cached, and the next page is rendered ahead of time.
 - In text mode, `pdftotext -layout` extracts just the current page.
-- **Search** extracts the whole document once with each word's position (`pdftotext -bbox-layout`) and matches the query against each page's words in reading order, so a phrase still matches when it wraps onto the next line. Text mode highlights the lines a match covers and the current match. In image mode the viewer jumps to the page, and in fit width it scrolls so the match sits a third of the way down the tab. After an auto-reload the matches are recomputed.
+- **Search** extracts the whole document once with each word's position (`pdftotext -bbox-layout`) and matches the query against each page's words in reading order, so a phrase still matches when it wraps onto the next line. Text mode highlights the lines a match covers and the current match. In image mode the viewer jumps to the page, and in fit width it scrolls so the match sits a third of the way down the tab, unless it is already on screen. After an auto-reload the matches are recomputed.
+- **Highlights** in image mode are drawn by poppler, since the image widget can't draw over a picture and the plugin can't encode a PNG fast enough itself. When a match is in view, `pdftoppm` renders that image again as raw pixels, the plugin wraps them in a one-page PDF with a yellow rectangle per matched line in multiply blend mode (so text stays dark), and `pdftoppm` renders that to the PNG that is shown. The word boxes come from `pdftotext -bbox-layout` for the page on screen. The plain image shows while the highlighted one renders, which takes about twice as long as a plain render.
 - **Auto-reload:** while a PDF tab is open, `pdfinfo` runs once a second. Its output includes the page count, file size, page size and modification dates, so a rebuild changes it. A change is only applied once two checks in a row agree, and a check that fails (file missing or still being written) is ignored. That way a LaTeX build in progress never shows a broken page. The reload keeps your page, scroll position and fit mode, and the old image stays up until the new one is rendered.
 - All poppler calls run asynchronously, so a slow page never blocks the editor. A reload drops results that were still in flight.
 
 ## Limitations
 
 - One page at a time in fit page; fit width scrolls within a page and steps to the next one. No arbitrary zoom levels or links.
-- In image mode the match itself isn't highlighted on the page; press `t` to see it in the text.
 - Search doesn't match across pages, or join a word hyphenated at the end of a line (`exam-` / `ple` is found as `exam- ple`).
-- In fit width each scroll step sends a new slice to the terminal (about 1 MB per screen at 1200 px wide), which is fine locally but slow over SSH.
+- In fit width each scroll step sends a new slice to the terminal (about 1 MB per screen at 1200 px wide), which is fine locally but slow over SSH. A screen with a search match is sent twice, plain and then highlighted.
 - Page images need a terminal with the Kitty graphics protocol. They work inside herdr with `kitty_graphics` enabled, but not inside tmux.
 - Password-protected PDFs (ones that need a password to open) aren't supported yet; the tab says so. PDFs that only restrict printing or copying open normally.
 - Scanned PDFs have no text, so text mode shows nothing for them.
@@ -114,7 +114,7 @@ TTT_BIN=/path/to/ttt tests/run.sh
 `tests/run.sh` installs the plugin into a throwaway config with its manifest permissions, then drives the real `ttt` binary:
 
 - **Text mode**, headlessly with `--exec`: opening, paging and its bounds, go to page, search (jump, `n`/`N`, wrap, no match, `Esc`, a phrase across lines, a page with no text, scrolling to the match), reload, a corrupt file, an encrypted file, and missing poppler.
-- **Image mode**, with `tests/kitty.py` (needs `python3`): it runs ttt in a pseudo-terminal that reports pixel sizes the way Ghostty does, drives it over `--listen` (port 4242 must be free), and decodes the Kitty graphics commands ttt sends. The checks cover fit page, fit width, scrolling across pages, mixed page sizes and rotation, scrolling to a search match in fit width, that idle redraws send nothing, and auto-reload (a half-written file is ignored; a rebuilt one reloads in place). Decoded images land in the temp dir, which is handy when debugging.
+- **Image mode**, with `tests/kitty.py` (needs `python3`): it runs ttt in a pseudo-terminal that reports pixel sizes the way Ghostty does, drives it over `--listen` (port 4242 must be free), and decodes the Kitty graphics commands ttt sends. The checks cover fit page, fit width, scrolling across pages, mixed page sizes and rotation, scrolling to a search match in fit width and highlighting it (counted in the decoded pixels), that idle redraws send nothing, and auto-reload (a half-written file is ignored; a rebuilt one reloads in place). Decoded images land in the temp dir, which is handy when debugging.
 
 `tests/make_fixture.py` regenerates the fixtures in `tests/fixtures/`.
 
